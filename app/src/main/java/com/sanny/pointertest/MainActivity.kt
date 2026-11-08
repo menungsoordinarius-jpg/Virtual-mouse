@@ -317,6 +317,45 @@ class MainActivity : AppCompatActivity() {
         binding.btnTestOverlay.setOnClickListener {
             toggleOverlay()
         }
+
+        // ==========================================
+        // Varian Investigasi Klik Kiri (A - E)
+        // ==========================================
+
+        binding.btnVariantA.setOnClickListener {
+            val coords = getTargetCoordinates() ?: return@setOnClickListener
+            startCountdown("Klik kiri varian A") {
+                executeVariantA(coords.first, coords.second)
+            }
+        }
+
+        binding.btnVariantB.setOnClickListener {
+            val coords = getTargetCoordinates() ?: return@setOnClickListener
+            startCountdown("Klik kiri varian B") {
+                executeVariantB(coords.first, coords.second)
+            }
+        }
+
+        binding.btnVariantC.setOnClickListener {
+            val coords = getTargetCoordinates() ?: return@setOnClickListener
+            startCountdown("Klik kiri varian C") {
+                executeVariantC(coords.first, coords.second)
+            }
+        }
+
+        binding.btnVariantD.setOnClickListener {
+            val coords = getTargetCoordinates() ?: return@setOnClickListener
+            startCountdown("Klik kiri varian D") {
+                executeVariantD(coords.first, coords.second)
+            }
+        }
+
+        binding.btnVariantE.setOnClickListener {
+            val coords = getTargetCoordinates() ?: return@setOnClickListener
+            startCountdown("Klik kiri varian E") {
+                executeVariantE(coords.first, coords.second)
+            }
+        }
     }
 
     private fun startCountdown(testName: String, action: suspend () -> Unit) {
@@ -442,6 +481,226 @@ class MainActivity : AppCompatActivity() {
         upEvent.recycle()
 
         Logger.log("LeftClick", "Hasil Klik Kiri: Down=${resDown.success}, Up=${resUp.success}")
+    }
+
+    /**
+     * Varian A: Tanpa memanggil setActionButton sama sekali.
+     * Menyuntik DOWN lalu UP (jeda 60 ms) di X,Y, catat hasil tiap event beserta nama action-nya.
+     */
+    private suspend fun executeVariantA(x: Float, y: Float) {
+        Logger.log("VarianA", "=== Tes Klik Kiri Varian A (Tanpa setActionButton) ===")
+        val downTime = android.os.SystemClock.uptimeMillis()
+
+        // 1. ACTION_DOWN tanpa setActionButton
+        val downEvent = EventInjector.createMouseVariantA(
+            action = MotionEvent.ACTION_DOWN,
+            x = x,
+            y = y,
+            buttonState = MotionEvent.BUTTON_PRIMARY,
+            downTime = downTime,
+            eventTime = downTime
+        )
+        val resDown = EventInjector.injectEvent(downEvent)
+        downEvent.recycle()
+        Logger.log(
+            "VarianA",
+            "ACTION_DOWN: ${if (resDown.success) "DITERIMA (true)" else "DITOLAK (false)"} | ${resDown.details}"
+        )
+
+        delay(60L)
+
+        // 2. ACTION_UP tanpa setActionButton
+        val upTime = android.os.SystemClock.uptimeMillis()
+        val upEvent = EventInjector.createMouseVariantA(
+            action = MotionEvent.ACTION_UP,
+            x = x,
+            y = y,
+            buttonState = 0,
+            downTime = downTime,
+            eventTime = upTime
+        )
+        val resUp = EventInjector.injectEvent(upEvent)
+        upEvent.recycle()
+        Logger.log(
+            "VarianA",
+            "ACTION_UP: ${if (resUp.success) "DITERIMA (true)" else "DITOLAK (false)"} | ${resUp.details}"
+        )
+    }
+
+    /**
+     * Varian B: Kirim HOVER_MOVE di titik itu, lalu HOVER_EXIT, tunggu 50 ms, baru DOWN (buttonState BUTTON_PRIMARY).
+     */
+    private suspend fun executeVariantB(x: Float, y: Float) {
+        Logger.log("VarianB", "=== Tes Klik Kiri Varian B (HOVER_MOVE -> HOVER_EXIT -> Jeda 50ms -> DOWN/UP) ===")
+
+        // 1. ACTION_HOVER_MOVE
+        val hoverMoveEvent = EventInjector.createMouseHoverEvent(MotionEvent.ACTION_HOVER_MOVE, x, y)
+        val resHoverMove = EventInjector.injectEvent(hoverMoveEvent)
+        hoverMoveEvent.recycle()
+        Logger.log(
+            "VarianB",
+            "ACTION_HOVER_MOVE: ${if (resHoverMove.success) "DITERIMA (true)" else "DITOLAK (false)"} | ${resHoverMove.details}"
+        )
+
+        // 2. ACTION_HOVER_EXIT
+        val hoverExitEvent = EventInjector.createMouseHoverEvent(MotionEvent.ACTION_HOVER_EXIT, x, y)
+        val resHoverExit = EventInjector.injectEvent(hoverExitEvent)
+        hoverExitEvent.recycle()
+        Logger.log(
+            "VarianB",
+            "ACTION_HOVER_EXIT: ${if (resHoverExit.success) "DITERIMA (true)" else "DITOLAK (false)"} | ${resHoverExit.details}"
+        )
+
+        // 3. Jeda 50 ms
+        delay(50L)
+
+        // 4. ACTION_DOWN
+        val downTime = android.os.SystemClock.uptimeMillis()
+        val downEvent = EventInjector.createMouseVariantA(
+            action = MotionEvent.ACTION_DOWN,
+            x = x,
+            y = y,
+            buttonState = MotionEvent.BUTTON_PRIMARY,
+            downTime = downTime,
+            eventTime = downTime
+        )
+        val resDown = EventInjector.injectEvent(downEvent)
+        downEvent.recycle()
+        Logger.log(
+            "VarianB",
+            "ACTION_DOWN: ${if (resDown.success) "DITERIMA (true)" else "DITOLAK (false)"} | ${resDown.details}"
+        )
+
+        delay(60L)
+
+        // 5. ACTION_UP
+        val upTime = android.os.SystemClock.uptimeMillis()
+        val upEvent = EventInjector.createMouseVariantA(
+            action = MotionEvent.ACTION_UP,
+            x = x,
+            y = y,
+            buttonState = 0,
+            downTime = downTime,
+            eventTime = upTime
+        )
+        val resUp = EventInjector.injectEvent(upEvent)
+        upEvent.recycle()
+        Logger.log(
+            "VarianB",
+            "ACTION_UP: ${if (resUp.success) "DITERIMA (true)" else "DITOLAK (false)"} | ${resUp.details}"
+        )
+    }
+
+    /**
+     * Varian C: Seperti klik kiri lama, tapi deviceId = -1 (virtual).
+     */
+    private suspend fun executeVariantC(x: Float, y: Float) {
+        Logger.log("VarianC", "=== Tes Klik Kiri Varian C (deviceId = -1 Virtual) ===")
+        val downTime = android.os.SystemClock.uptimeMillis()
+
+        // 1. ACTION_DOWN dengan deviceId = -1
+        val downEvent = EventInjector.createMouseButtonEvent(
+            action = MotionEvent.ACTION_DOWN,
+            x = x,
+            y = y,
+            buttonState = MotionEvent.BUTTON_PRIMARY,
+            actionButton = MotionEvent.BUTTON_PRIMARY,
+            deviceId = -1,
+            downTime = downTime,
+            eventTime = downTime
+        )
+        val resDown = EventInjector.injectEvent(downEvent)
+        downEvent.recycle()
+        Logger.log(
+            "VarianC",
+            "ACTION_DOWN (deviceId=-1): ${if (resDown.success) "DITERIMA (true)" else "DITOLAK (false)"} | ${resDown.details}"
+        )
+
+        delay(60L)
+
+        // 2. ACTION_UP dengan deviceId = -1
+        val upTime = android.os.SystemClock.uptimeMillis()
+        val upEvent = EventInjector.createMouseButtonEvent(
+            action = MotionEvent.ACTION_UP,
+            x = x,
+            y = y,
+            buttonState = 0,
+            actionButton = 0,
+            deviceId = -1,
+            downTime = downTime,
+            eventTime = upTime
+        )
+        val resUp = EventInjector.injectEvent(upEvent)
+        upEvent.recycle()
+        Logger.log(
+            "VarianC",
+            "ACTION_UP (deviceId=-1): ${if (resUp.success) "DITERIMA (true)" else "DITOLAK (false)"} | ${resUp.details}"
+        )
+    }
+
+    /**
+     * Varian D: Seperti klik kiri lama, tapi panggil MotionEvent.setDisplayId(0) lewat reflection pada setiap event.
+     */
+    private suspend fun executeVariantD(x: Float, y: Float) {
+        Logger.log("VarianD", "=== Tes Klik Kiri Varian D (setDisplayId(0) via Reflection) ===")
+        val downTime = android.os.SystemClock.uptimeMillis()
+
+        // 1. ACTION_DOWN + setDisplayId(0)
+        val downEvent = EventInjector.createMouseButtonEvent(
+            action = MotionEvent.ACTION_DOWN,
+            x = x,
+            y = y,
+            buttonState = MotionEvent.BUTTON_PRIMARY,
+            actionButton = MotionEvent.BUTTON_PRIMARY,
+            downTime = downTime,
+            eventTime = downTime
+        )
+        val downSetDisplay = EventInjector.setDisplayId(downEvent, 0)
+        Logger.log("VarianD", "Refleksi setDisplayId(0) pada DOWN: berhasil=$downSetDisplay")
+
+        val resDown = EventInjector.injectEvent(downEvent)
+        downEvent.recycle()
+        Logger.log(
+            "VarianD",
+            "ACTION_DOWN (displayId=0): ${if (resDown.success) "DITERIMA (true)" else "DITOLAK (false)"} | ${resDown.details}"
+        )
+
+        delay(60L)
+
+        // 2. ACTION_UP + setDisplayId(0)
+        val upTime = android.os.SystemClock.uptimeMillis()
+        val upEvent = EventInjector.createMouseButtonEvent(
+            action = MotionEvent.ACTION_UP,
+            x = x,
+            y = y,
+            buttonState = 0,
+            actionButton = 0,
+            downTime = downTime,
+            eventTime = upTime
+        )
+        val upSetDisplay = EventInjector.setDisplayId(upEvent, 0)
+        Logger.log("VarianD", "Refleksi setDisplayId(0) pada UP: berhasil=$upSetDisplay")
+
+        val resUp = EventInjector.injectEvent(upEvent)
+        upEvent.recycle()
+        Logger.log(
+            "VarianD",
+            "ACTION_UP (displayId=0): ${if (resUp.success) "DITERIMA (true)" else "DITOLAK (false)"} | ${resUp.details}"
+        )
+    }
+
+    /**
+     * Varian E: Jalankan perintah shell "input mouse tap X Y" lewat Shizuku
+     * (UserService atau Shizuku.newProcess lewat reflection), catat exit code dan output.
+     */
+    private fun executeVariantE(x: Float, y: Float) {
+        Logger.log("VarianE", "=== Tes Klik Kiri Varian E (Perintah Shell via Shizuku) ===")
+        val cmd = "input mouse tap ${x.toInt()} ${y.toInt()}"
+        Logger.log("VarianE", "Menjalankan perintah: '$cmd'")
+
+        val (exitCode, output) = EventInjector.executeShellCommand(cmd)
+        Logger.log("VarianE", "Hasil Eksekusi: Exit Code = $exitCode")
+        Logger.log("VarianE", "Output:\n$output")
     }
 
     /**

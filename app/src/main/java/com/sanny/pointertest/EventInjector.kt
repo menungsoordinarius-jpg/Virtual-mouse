@@ -218,6 +218,7 @@ object EventInjector {
         y: Float,
         buttonState: Int,
         actionButton: Int = 0,
+        deviceId: Int = 0,
         downTime: Long = SystemClock.uptimeMillis(),
         eventTime: Long = SystemClock.uptimeMillis()
     ): MotionEvent {
@@ -243,7 +244,7 @@ object EventInjector {
             buttonState,
             1f,
             1f,
-            0,
+            deviceId,
             0,
             InputDevice.SOURCE_MOUSE,
             0
@@ -260,6 +261,104 @@ object EventInjector {
         }
 
         return event
+    }
+
+    /**
+     * Varian A: Murni MotionEvent mouse tanpa memanggil setActionButton sama sekali.
+     */
+    fun createMouseVariantA(
+        action: Int,
+        x: Float,
+        y: Float,
+        buttonState: Int,
+        deviceId: Int = 0,
+        downTime: Long = SystemClock.uptimeMillis(),
+        eventTime: Long = SystemClock.uptimeMillis()
+    ): MotionEvent {
+        val properties = arrayOf(MotionEvent.PointerProperties().apply {
+            id = 0
+            toolType = MotionEvent.TOOL_TYPE_MOUSE
+        })
+        val coords = arrayOf(MotionEvent.PointerCoords().apply {
+            this.x = x
+            this.y = y
+            this.pressure = if (action == MotionEvent.ACTION_UP) 0f else 1f
+            this.size = 1f
+        })
+
+        return MotionEvent.obtain(
+            downTime,
+            eventTime,
+            action,
+            1,
+            properties,
+            coords,
+            0,
+            buttonState,
+            1f,
+            1f,
+            deviceId,
+            0,
+            InputDevice.SOURCE_MOUSE,
+            0
+        )
+    }
+
+    /**
+     * Varian D: Panggil MotionEvent.setDisplayId(displayId) lewat reflection.
+     */
+    fun setDisplayId(event: MotionEvent, displayId: Int = 0): Boolean {
+        return try {
+            val method = MotionEvent::class.java.getMethod("setDisplayId", Int::class.javaPrimitiveType)
+            method.isAccessible = true
+            method.invoke(event, displayId)
+            true
+        } catch (t: Throwable) {
+            Logger.log("Injector", "Gagal memanggil setDisplayId: ${t.message}")
+            false
+        }
+    }
+
+    /**
+     * Varian E: Jalankan perintah shell lewat Shizuku (Shizuku.newProcess lewat reflection).
+     * Mengembalikan exit code dan gabungan output stdout + stderr.
+     */
+    fun executeShellCommand(command: String): Pair<Int, String> {
+        return try {
+            val newProcessMethod = Shizuku::class.java.getMethod(
+                "newProcess",
+                Array<String>::class.java,
+                Array<String>::class.java,
+                String::class.java
+            )
+            val process = newProcessMethod.invoke(
+                null,
+                arrayOf("sh", "-c", command),
+                null,
+                null
+            ) as Process
+
+            val stdout = process.inputStream.bufferedReader().use { it.readText() }
+            val stderr = process.errorStream.bufferedReader().use { it.readText() }
+            val exitCode = process.waitFor()
+
+            val combined = buildString {
+                if (stdout.isNotBlank()) append(stdout.trim())
+                if (stderr.isNotBlank()) {
+                    if (isNotEmpty()) append("\n")
+                    append("STDERR: ").append(stderr.trim())
+                }
+                if (isEmpty()) append("(tanpa output teks)")
+            }
+            Pair(exitCode, combined)
+        } catch (t: Throwable) {
+            val actual = if (t is java.lang.reflect.InvocationTargetException && t.targetException != null) {
+                t.targetException
+            } else {
+                t
+            }
+            Pair(-1, "Exception: ${actual.javaClass.simpleName} - ${actual.message}")
+        }
     }
 
     fun createMouseScrollEvent(

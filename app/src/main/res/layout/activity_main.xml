@@ -444,6 +444,136 @@
                     android:textSize="12sp" />
             </LinearLayout>
 
+            <!-- Bagian Investigasi: Klik Kiri Varian A sampai E -->
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="14dp"
+                app:cardCornerRadius="12dp"
+                app:cardElevation="2dp"
+                app:strokeColor="#CBD5E1"
+                app:strokeWidth="1dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Investigasi Klik Kiri (Varian A - E)"
+                        android:textColor="#0F172A"
+                        android:textSize="15sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:layout_marginBottom="10dp"
+                        android:text="Menguji penyebab penolakan ACTION_DOWN SOURCE_MOUSE. Tiap tombol menunggu 5 detik, menyuntik DOWN lalu UP (jeda 60 ms), dan mencatat hasil tiap event ke log."
+                        android:textColor="#64748B"
+                        android:textSize="12sp" />
+
+                    <!-- Varian A: Tanpa memanggil setActionButton sama sekali -->
+                    <Button
+                        android:id="@+id/btnVariantA"
+                        style="@style/Widget.Material3.Button"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="4dp"
+                        android:tag="btn_variant_a"
+                        android:text="Klik kiri varian A"
+                        android:textSize="13sp" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_marginBottom="10dp"
+                        android:text="A: Tanpa memanggil setActionButton sama sekali."
+                        android:textColor="#475569"
+                        android:textSize="11sp" />
+
+                    <!-- Varian B: Kirim HOVER_MOVE, HOVER_EXIT, tunggu 50ms, DOWN -->
+                    <Button
+                        android:id="@+id/btnVariantB"
+                        style="@style/Widget.Material3.Button"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="4dp"
+                        android:tag="btn_variant_b"
+                        android:text="Klik kiri varian B"
+                        android:textSize="13sp" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_marginBottom="10dp"
+                        android:text="B: HOVER_MOVE -> HOVER_EXIT -> Jeda 50ms -> DOWN."
+                        android:textColor="#475569"
+                        android:textSize="11sp" />
+
+                    <!-- Varian C: deviceId = -1 (virtual) -->
+                    <Button
+                        android:id="@+id/btnVariantC"
+                        style="@style/Widget.Material3.Button"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="4dp"
+                        android:tag="btn_variant_c"
+                        android:text="Klik kiri varian C"
+                        android:textSize="13sp" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_marginBottom="10dp"
+                        android:text="C: Seperti klik kiri lama, tapi deviceId = -1 (virtual)."
+                        android:textColor="#475569"
+                        android:textSize="11sp" />
+
+                    <!-- Varian D: setDisplayId(0) lewat reflection -->
+                    <Button
+                        android:id="@+id/btnVariantD"
+                        style="@style/Widget.Material3.Button"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="4dp"
+                        android:tag="btn_variant_d"
+                        android:text="Klik kiri varian D"
+                        android:textSize="13sp" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_marginBottom="10dp"
+                        android:text="D: Panggil MotionEvent.setDisplayId(0) lewat reflection."
+                        android:textColor="#475569"
+                        android:textSize="11sp" />
+
+                    <!-- Varian E: input mouse tap X Y lewat Shizuku shell -->
+                    <Button
+                        android:id="@+id/btnVariantE"
+                        style="@style/Widget.Material3.Button"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="4dp"
+                        android:tag="btn_variant_e"
+                        android:text="Klik kiri varian E"
+                        android:textSize="13sp" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:text="E: Perintah shell 'input mouse tap X Y' via Shizuku."
+                        android:textColor="#475569"
+                        android:textSize="11sp" />
+
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
             <!-- Area Log Konsol -->
             <LinearLayout
                 android:layout_width="match_parent"
