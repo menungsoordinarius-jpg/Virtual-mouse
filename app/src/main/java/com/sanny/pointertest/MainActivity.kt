@@ -1,7 +1,9 @@
 package com.sanny.pointertest
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -9,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.TextUtils
 import android.util.DisplayMetrics
 import android.view.MotionEvent
 import android.view.Surface
@@ -38,11 +41,21 @@ class MainActivity : AppCompatActivity() {
     ) {
         if (OverlayManager.canDrawOverlays(this)) {
             Logger.log("Overlay", "Izin overlay berhasil diberikan.")
-            OverlayManager.showOverlay(this)
-            updateOverlayButtonText()
+            Toast.makeText(this, "Izin overlay aktif", Toast.LENGTH_SHORT).show()
         } else {
             Logger.log("Overlay", "Izin overlay ditolak oleh pengguna.")
             Toast.makeText(this, "Izin overlay belum aktif", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        Logger.log("Notification", "Izin POST_NOTIFICATIONS: ${if (isGranted) "Diberikan" else "Ditolak"}")
+        if (isGranted) {
+            startPointerServiceInternal()
+        } else {
+            Toast.makeText(this, "Izin notifikasi diperlukan untuk menjalankan foreground service", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -72,12 +85,14 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         setupShizukuListeners()
+        setupPointerServiceControls()
         setupDeviceInfo()
         setupCoordinateInputs()
         setupLogConsole()
         setupTestButtons()
         setupOverlayCallback()
 
+        observePointerAndAccessibilityState()
         updateShizukuStatus()
     }
 
@@ -85,6 +100,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         updateShizukuStatus()
         updateOverlayButtonText()
+        updateAccessibilityStatus()
     }
 
     override fun onDestroy() {
@@ -114,6 +130,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnRefreshStatus.setOnClickListener {
             updateShizukuStatus()
+            updateAccessibilityStatus()
             Toast.makeText(this, "Status diperbarui", Toast.LENGTH_SHORT).show()
         }
     }
@@ -187,6 +204,138 @@ class MainActivity : AppCompatActivity() {
             Logger.log("Shizuku", "Gagal meminta izin: ${t.message}")
             Toast.makeText(this, "Gagal meminta izin: ${t.message}", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    // ==========================================
+    // TAHAP 2: PointerService & Accessibility Setup
+    // ==========================================
+
+    private fun setupPointerServiceControls() {
+        binding.btnStartPointer.setOnClickListener {
+            startPointer()
+        }
+
+        binding.btnStopPointer.setOnClickListener {
+            stopPointer()
+        }
+
+        binding.btnOpenAccessibility.setOnClickListener {
+            try {
+                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                startActivity(intent)
+                Logger.log("Main", "Membuka Pengaturan Aksesibilitas sistem.")
+            } catch (e: Exception) {
+                Toast.makeText(this, "Gagal membuka pengaturan aksesibilitas: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun startPointer() {
+        // 1. Cek izin overlay
+        if (!OverlayManager.canDrawOverlays(this)) {
+            Toast.makeText(
+                this,
+                "Mohon berikan izin 'Tampil di atas aplikasi lain' terlebih dahulu",
+                Toast.LENGTH_LONG
+            ).show()
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            )
+            overlayPermissionLauncher.launch(intent)
+            return
+        }
+
+        // 2. Cek izin POST_NOTIFICATIONS untuk Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                return
+            }
+        }
+
+        startPointerServiceInternal()
+    }
+
+    private fun startPointerServiceInternal() {
+        try {
+            val intent = Intent(this, PointerService::class.java)
+            ContextCompat.startForegroundService(this, intent)
+            Logger.log("Main", "Memulai PointerService...")
+            Toast.makeText(this, "Pointer Service dimulai", Toast.LENGTH_SHORT).show()
+        } catch (t: Throwable) {
+            Logger.log("Main", "Gagal memulai PointerService: ${t.message}")
+            Toast.makeText(this, "Gagal memulai pointer: ${t.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun stopPointer() {
+        try {
+            val intent = Intent(this, PointerService::class.java)
+            stopService(intent)
+            Logger.log("Main", "Menghentikan PointerService...")
+            Toast.makeText(this, "Pointer Service dihentikan", Toast.LENGTH_SHORT).show()
+        } catch (t: Throwable) {
+            Logger.log("Main", "Gagal menghentikan PointerService: ${t.message}")
+        }
+    }
+
+    private fun observePointerAndAccessibilityState() {
+        lifecycleScope.launch {
+            PointerServiceController.isServiceRunning.collect { isRunning ->
+                if (isRunning) {
+                    binding.tvPointerServiceStatus.text = "Aktif Berjalan"
+                    binding.tvPointerServiceStatus.setBackgroundResource(R.drawable.bg_status_badge_green)
+                    binding.tvPointerServiceStatus.setTextColor(ContextCompat.getColor(this@MainActivity, android.R.color.holo_green_dark))
+                    binding.btnStartPointer.isEnabled = false
+                    binding.btnStopPointer.isEnabled = true
+                } else {
+                    binding.tvPointerServiceStatus.text = "Tidak Aktif"
+                    binding.tvPointerServiceStatus.setBackgroundResource(R.drawable.bg_status_badge_red)
+                    binding.tvPointerServiceStatus.setTextColor(ContextCompat.getColor(this@MainActivity, android.R.color.holo_red_dark))
+                    binding.btnStartPointer.isEnabled = true
+                    binding.btnStopPointer.isEnabled = false
+                }
+            }
+        }
+
+        lifecycleScope.launch {
+            KeyboardDetector.isServiceConnected.collect {
+                updateAccessibilityStatus()
+            }
+        }
+    }
+
+    private fun updateAccessibilityStatus() {
+        val isEnabled = isAccessibilityServiceEnabled()
+        if (isEnabled) {
+            binding.tvAccessibilityStatus.text = "Aktif (Membaca IME)"
+            binding.tvAccessibilityStatus.setBackgroundResource(R.drawable.bg_status_badge_green)
+            binding.tvAccessibilityStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
+        } else {
+            binding.tvAccessibilityStatus.text = "Belum Aktif"
+            binding.tvAccessibilityStatus.setBackgroundResource(R.drawable.bg_status_badge_red)
+            binding.tvAccessibilityStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_red_dark))
+        }
+    }
+
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        if (KeyboardDetector.isServiceConnected.value) return true
+        val expectedComponentName = ComponentName(this, KeyboardAccessibilityService::class.java)
+        val enabledServices = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        val colonSplitter = TextUtils.SimpleStringSplitter(':')
+        colonSplitter.setString(enabledServices)
+        while (colonSplitter.hasNext()) {
+            val componentNameString = colonSplitter.next()
+            val enabledComponent = ComponentName.unflattenFromString(componentNameString)
+            if (enabledComponent != null && enabledComponent == expectedComponentName) {
+                return true
+            }
+        }
+        return false
     }
 
     // ==========================================
@@ -409,20 +558,15 @@ class MainActivity : AppCompatActivity() {
     // Test Implementations
     // ==========================================
 
-    /**
-     * 1. Hover mouse: suntik ACTION_HOVER_MOVE dengan source SOURCE_MOUSE dan tool type TOOL_TYPE_MOUSE,
-     * bergerak halus dari titik X,Y sejauh sekitar 400 px ke kanan selama 2 detik.
-     */
     private suspend fun executeMouseHover(startX: Float, startY: Float) {
         val totalDistance = 400f
         val durationMs = 2000L
-        val steps = 80 // 80 langkah x 25ms = 2000ms
+        val steps = 80
         val stepInterval = durationMs / steps
         val stepDx = totalDistance / steps
 
         Logger.log("Hover", "Mulai hover mouse dari ($startX, $startY) sejauh +400px selama 2 detik")
 
-        // Hover enter
         val enterEvent = EventInjector.createMouseHoverEvent(MotionEvent.ACTION_HOVER_ENTER, startX, startY)
         EventInjector.injectEvent(enterEvent)
         enterEvent.recycle()
@@ -438,7 +582,6 @@ class MainActivity : AppCompatActivity() {
             delay(stepInterval)
         }
 
-        // Hover exit
         val exitEvent = EventInjector.createMouseHoverEvent(MotionEvent.ACTION_HOVER_EXIT, startX + totalDistance, startY)
         EventInjector.injectEvent(exitEvent)
         exitEvent.recycle()
@@ -446,9 +589,6 @@ class MainActivity : AppCompatActivity() {
         Logger.log("Hover", "Selesai hover mouse sejauh 400px (${steps} frame)")
     }
 
-    /**
-     * 2. Klik kiri mouse: ACTION_DOWN lalu ACTION_UP dengan BUTTON_PRIMARY, source mouse, di X,Y.
-     */
     private suspend fun executeMouseLeftClick(x: Float, y: Float) {
         Logger.log("LeftClick", "Menyuntik klik kiri mouse di ($x, $y)")
 
@@ -483,15 +623,10 @@ class MainActivity : AppCompatActivity() {
         Logger.log("LeftClick", "Hasil Klik Kiri: Down=${resDown.success}, Up=${resUp.success}")
     }
 
-    /**
-     * Varian A: Tanpa memanggil setActionButton sama sekali.
-     * Menyuntik DOWN lalu UP (jeda 60 ms) di X,Y, catat hasil tiap event beserta nama action-nya.
-     */
     private suspend fun executeVariantA(x: Float, y: Float) {
         Logger.log("VarianA", "=== Tes Klik Kiri Varian A (Tanpa setActionButton) ===")
         val downTime = android.os.SystemClock.uptimeMillis()
 
-        // 1. ACTION_DOWN tanpa setActionButton
         val downEvent = EventInjector.createMouseVariantA(
             action = MotionEvent.ACTION_DOWN,
             x = x,
@@ -509,7 +644,6 @@ class MainActivity : AppCompatActivity() {
 
         delay(60L)
 
-        // 2. ACTION_UP tanpa setActionButton
         val upTime = android.os.SystemClock.uptimeMillis()
         val upEvent = EventInjector.createMouseVariantA(
             action = MotionEvent.ACTION_UP,
@@ -527,13 +661,9 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    /**
-     * Varian B: Kirim HOVER_MOVE di titik itu, lalu HOVER_EXIT, tunggu 50 ms, baru DOWN (buttonState BUTTON_PRIMARY).
-     */
     private suspend fun executeVariantB(x: Float, y: Float) {
         Logger.log("VarianB", "=== Tes Klik Kiri Varian B (HOVER_MOVE -> HOVER_EXIT -> Jeda 50ms -> DOWN/UP) ===")
 
-        // 1. ACTION_HOVER_MOVE
         val hoverMoveEvent = EventInjector.createMouseHoverEvent(MotionEvent.ACTION_HOVER_MOVE, x, y)
         val resHoverMove = EventInjector.injectEvent(hoverMoveEvent)
         hoverMoveEvent.recycle()
@@ -542,7 +672,6 @@ class MainActivity : AppCompatActivity() {
             "ACTION_HOVER_MOVE: ${if (resHoverMove.success) "DITERIMA (true)" else "DITOLAK (false)"} | ${resHoverMove.details}"
         )
 
-        // 2. ACTION_HOVER_EXIT
         val hoverExitEvent = EventInjector.createMouseHoverEvent(MotionEvent.ACTION_HOVER_EXIT, x, y)
         val resHoverExit = EventInjector.injectEvent(hoverExitEvent)
         hoverExitEvent.recycle()
@@ -551,10 +680,8 @@ class MainActivity : AppCompatActivity() {
             "ACTION_HOVER_EXIT: ${if (resHoverExit.success) "DITERIMA (true)" else "DITOLAK (false)"} | ${resHoverExit.details}"
         )
 
-        // 3. Jeda 50 ms
         delay(50L)
 
-        // 4. ACTION_DOWN
         val downTime = android.os.SystemClock.uptimeMillis()
         val downEvent = EventInjector.createMouseVariantA(
             action = MotionEvent.ACTION_DOWN,
@@ -573,7 +700,6 @@ class MainActivity : AppCompatActivity() {
 
         delay(60L)
 
-        // 5. ACTION_UP
         val upTime = android.os.SystemClock.uptimeMillis()
         val upEvent = EventInjector.createMouseVariantA(
             action = MotionEvent.ACTION_UP,
@@ -591,14 +717,10 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    /**
-     * Varian C: Seperti klik kiri lama, tapi deviceId = -1 (virtual).
-     */
     private suspend fun executeVariantC(x: Float, y: Float) {
         Logger.log("VarianC", "=== Tes Klik Kiri Varian C (deviceId = -1 Virtual) ===")
         val downTime = android.os.SystemClock.uptimeMillis()
 
-        // 1. ACTION_DOWN dengan deviceId = -1
         val downEvent = EventInjector.createMouseButtonEvent(
             action = MotionEvent.ACTION_DOWN,
             x = x,
@@ -618,7 +740,6 @@ class MainActivity : AppCompatActivity() {
 
         delay(60L)
 
-        // 2. ACTION_UP dengan deviceId = -1
         val upTime = android.os.SystemClock.uptimeMillis()
         val upEvent = EventInjector.createMouseButtonEvent(
             action = MotionEvent.ACTION_UP,
@@ -638,14 +759,10 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    /**
-     * Varian D: Seperti klik kiri lama, tapi panggil MotionEvent.setDisplayId(0) lewat reflection pada setiap event.
-     */
     private suspend fun executeVariantD(x: Float, y: Float) {
         Logger.log("VarianD", "=== Tes Klik Kiri Varian D (setDisplayId(0) via Reflection) ===")
         val downTime = android.os.SystemClock.uptimeMillis()
 
-        // 1. ACTION_DOWN + setDisplayId(0)
         val downEvent = EventInjector.createMouseButtonEvent(
             action = MotionEvent.ACTION_DOWN,
             x = x,
@@ -667,7 +784,6 @@ class MainActivity : AppCompatActivity() {
 
         delay(60L)
 
-        // 2. ACTION_UP + setDisplayId(0)
         val upTime = android.os.SystemClock.uptimeMillis()
         val upEvent = EventInjector.createMouseButtonEvent(
             action = MotionEvent.ACTION_UP,
@@ -689,10 +805,6 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    /**
-     * Varian E: Jalankan perintah shell "input mouse tap X Y" lewat Shizuku
-     * (UserService atau Shizuku.newProcess lewat reflection), catat exit code dan output.
-     */
     private fun executeVariantE(x: Float, y: Float) {
         Logger.log("VarianE", "=== Tes Klik Kiri Varian E (Perintah Shell via Shizuku) ===")
         val cmd = "input mouse tap ${x.toInt()} ${y.toInt()}"
@@ -703,15 +815,11 @@ class MainActivity : AppCompatActivity() {
         Logger.log("VarianE", "Output:\n$output")
     }
 
-    /**
-     * 3. Klik kanan mouse: sama, dengan BUTTON_SECONDARY (sertakan ACTION_BUTTON_PRESS/RELEASE).
-     */
     private suspend fun executeMouseRightClick(x: Float, y: Float) {
         Logger.log("RightClick", "Menyuntik klik kanan mouse di ($x, $y)")
 
         val downTime = android.os.SystemClock.uptimeMillis()
 
-        // 1. ACTION_DOWN dengan BUTTON_SECONDARY
         val downEvent = EventInjector.createMouseButtonEvent(
             action = MotionEvent.ACTION_DOWN,
             x = x,
@@ -724,7 +832,6 @@ class MainActivity : AppCompatActivity() {
         EventInjector.injectEvent(downEvent)
         downEvent.recycle()
 
-        // 2. ACTION_BUTTON_PRESS dengan BUTTON_SECONDARY
         val pressEvent = EventInjector.createMouseButtonEvent(
             action = MotionEvent.ACTION_BUTTON_PRESS,
             x = x,
@@ -741,7 +848,6 @@ class MainActivity : AppCompatActivity() {
 
         val upTime = android.os.SystemClock.uptimeMillis()
 
-        // 3. ACTION_BUTTON_RELEASE dengan BUTTON_SECONDARY
         val releaseEvent = EventInjector.createMouseButtonEvent(
             action = MotionEvent.ACTION_BUTTON_RELEASE,
             x = x,
@@ -754,7 +860,6 @@ class MainActivity : AppCompatActivity() {
         EventInjector.injectEvent(releaseEvent)
         releaseEvent.recycle()
 
-        // 4. ACTION_UP
         val upEvent = EventInjector.createMouseButtonEvent(
             action = MotionEvent.ACTION_UP,
             x = x,
@@ -770,9 +875,6 @@ class MainActivity : AppCompatActivity() {
         Logger.log("RightClick", "Hasil Klik Kanan lengkap selesai: Up=${resUp.success}")
     }
 
-    /**
-     * 4. Scroll mouse: ACTION_SCROLL dengan AXIS_VSCROLL (nilai positif dan negatif sebagai dua tombol).
-     */
     private fun executeMouseScroll(x: Float, y: Float, scrollValue: Float) {
         Logger.log("Scroll", "Menyuntik scroll mouse di ($x, $y) dengan nilai AXIS_VSCROLL = $scrollValue")
         val scrollEvent = EventInjector.createMouseScrollEvent(x, y, scrollValue)
@@ -781,9 +883,6 @@ class MainActivity : AppCompatActivity() {
         Logger.log("Scroll", "Hasil Scroll (VScroll=$scrollValue): ${res.details}")
     }
 
-    /**
-     * 5. Tap jari: ACTION_DOWN/UP dengan SOURCE_TOUCHSCREEN di X,Y (pembanding).
-     */
     private suspend fun executeTouchTap(x: Float, y: Float) {
         Logger.log("TouchTap", "Menyuntik tap jari di ($x, $y)")
 
@@ -802,9 +901,6 @@ class MainActivity : AppCompatActivity() {
         Logger.log("TouchTap", "Hasil Tap Jari: Down=${resDown.success}, Up=${resUp.success}")
     }
 
-    /**
-     * 6. Long press jari: tahan 600 ms lalu lepas, source touchscreen.
-     */
     private suspend fun executeTouchLongPress(x: Float, y: Float) {
         Logger.log("LongPress", "Menyuntik long press jari di ($x, $y) selama 600ms")
 
@@ -823,11 +919,6 @@ class MainActivity : AppCompatActivity() {
         Logger.log("LongPress", "Hasil Long Press Jari: Down=${resDown.success}, Up=${resUp.success}")
     }
 
-    /**
-     * 7. Overlay tes: tampilkan/sembunyikan jendela overlay layar penuh transparan
-     * (TYPE_APPLICATION_OVERLAY, FLAG_NOT_FOCUSABLE) yang mencatat setiap sentuhan ke log.
-     * Minta izin "tampil di atas aplikasi lain" jika belum ada.
-     */
     private fun toggleOverlay() {
         if (OverlayManager.isOverlayShowing) {
             OverlayManager.hideOverlay()
@@ -851,7 +942,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupOverlayCallback() {
-        OverlayManager.onOverlayStateChanged = { isShowing ->
+        OverlayManager.onOverlayStateChanged = {
             runOnUiThread {
                 updateOverlayButtonText()
             }

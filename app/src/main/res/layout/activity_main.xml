@@ -146,6 +146,144 @@
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
+            <!-- TAHAP 2: Kontrol Pointer Card -->
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                app:cardCornerRadius="12dp"
+                app:cardElevation="2dp"
+                app:strokeColor="#CBD5E1"
+                app:strokeWidth="1dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Layanan Pointer &amp; Zona Sentuh (Tahap 2)"
+                        android:textColor="#0F172A"
+                        android:textSize="15sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:layout_marginBottom="10dp"
+                        android:text="Kursor panah overlay dengan pergerakan relatif, akselerasi mulus 60 fps, deteksi tinggi keyboard IME, dan uji kalibrasi tap."
+                        android:textColor="#64748B"
+                        android:textSize="12sp" />
+
+                    <!-- Status Baris: Pointer Service -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Status Pointer Service:"
+                            android:textColor="#475569"
+                            android:textSize="13sp" />
+
+                        <TextView
+                            android:id="@+id/tvPointerServiceStatus"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:background="@drawable/bg_status_badge_red"
+                            android:paddingStart="10dp"
+                            android:paddingTop="3dp"
+                            android:paddingEnd="10dp"
+                            android:paddingBottom="3dp"
+                            android:tag="pointer_service_status"
+                            android:text="Tidak Aktif"
+                            android:textColor="#991B1B"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <!-- Status Baris: Aksesibilitas Deteksi Keyboard -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Deteksi Keyboard (Aksesibilitas):"
+                            android:textColor="#475569"
+                            android:textSize="13sp" />
+
+                        <TextView
+                            android:id="@+id/tvAccessibilityStatus"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:background="@drawable/bg_status_badge_red"
+                            android:paddingStart="10dp"
+                            android:paddingTop="3dp"
+                            android:paddingEnd="10dp"
+                            android:paddingBottom="3dp"
+                            android:tag="accessibility_status"
+                            android:text="Belum Aktif"
+                            android:textColor="#991B1B"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <!-- Tombol Mulai & Hentikan Pointer -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/btnStartPointer"
+                            style="@style/Widget.Material3.Button"
+                            android:layout_width="0dp"
+                            android:layout_height="44dp"
+                            android:layout_weight="1"
+                            android:tag="start_pointer_button"
+                            android:text="Mulai Pointer"
+                            android:textSize="13sp" />
+
+                        <Button
+                            android:id="@+id/btnStopPointer"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="44dp"
+                            android:layout_marginStart="8dp"
+                            android:layout_weight="1"
+                            android:tag="stop_pointer_button"
+                            android:text="Hentikan Pointer"
+                            android:textSize="13sp" />
+                    </LinearLayout>
+
+                    <!-- Tombol Pengaturan Aksesibilitas -->
+                    <Button
+                        android:id="@+id/btnOpenAccessibility"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:layout_marginTop="8dp"
+                        android:tag="open_accessibility_button"
+                        android:text="Buka Pengaturan Aksesibilitas"
+                        android:textSize="13sp" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
             <!-- Device & Display Info Card -->
             <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"

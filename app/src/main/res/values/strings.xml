@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Pointer Test</string>
+    <string name="accessibility_service_description">Membaca batas jendela keyboard (IME) untuk menyesuaikan tinggi zona sentuh pointer.</string>
 </resources>

@@ -2,5 +2,6 @@
   "name": "Pointer Test",
   "description": "Aplikasi tes kelayakan penyuntikan event mouse asli melalui Shizuku dan deteksi kursor sistem Android",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"],
+  "version": [ "0", "3", "0" ]
 }

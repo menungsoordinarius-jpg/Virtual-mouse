@@ -250,7 +250,9 @@ object EventInjector {
             0
         )
 
-        if (actionButton != 0) {
+        // Panggil setActionButton HANYA jika action adalah ACTION_BUTTON_PRESS atau ACTION_BUTTON_RELEASE.
+        // Untuk ACTION_DOWN dan ACTION_UP jangan panggil karena sistem Android menolaknya.
+        if (actionButton != 0 && (action == MotionEvent.ACTION_BUTTON_PRESS || action == MotionEvent.ACTION_BUTTON_RELEASE)) {
             try {
                 val setActionButton = MotionEvent::class.java.getMethod(
                     "setActionButton",
