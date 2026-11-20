@@ -357,6 +357,8 @@ class PointerService : Service() {
         try {
             windowManager?.addView(view, lp)
             Logger.log("Pointer", "Jendela zona sentuh berhasil dipasang (Tinggi: ${initialHeight}px).")
+            view.updatePointerHole(engine.pointerX, engine.pointerY)
+            view.setupHoleMode()
         } catch (t: Throwable) {
             Logger.log("Pointer", "Gagal memasang jendela zona sentuh: ${t.message}")
         }
@@ -401,9 +403,10 @@ class PointerService : Service() {
     // ==========================================
 
     private fun setupPointerEngineCallbacks() {
-        // Gerakan mulus 60 fps ke CursorView
+        // Gerakan mulus 60 fps ke CursorView dan pembaruan lubang TouchZoneView
         engine.onPositionChanged = { x, y ->
             cursorView?.updatePosition(x, y)
+            touchZoneView?.updatePointerHole(x, y)
         }
 
         // Gestur mode biasa: Tap, HOLD, Tahan lalu Geser (diserialkan via Channel UNLIMITED)
@@ -457,7 +460,9 @@ class PointerService : Service() {
                     "HOLD selesai (total gerak ${endCmd.totalDx.toInt()},${endCmd.totalDy.toInt()})" +
                         "${if (endCmd.isCancel) " [CANCEL]" else ""}: Up=${resUp.success}"
                 )
-                delay(80L)
+                if (zoneDisabled) {
+                    delay(80L)
+                }
             } finally {
                 withContext(NonCancellable) {
                     if (zoneDisabled) {
@@ -480,10 +485,20 @@ class PointerService : Service() {
                             injectTouchEvent(MotionEvent.ACTION_UP, lastHoldX, lastHoldY, holdDownTime)
                             holdActive = false
                         }
+                        if (zoneDisabled) {
+                            withContext(NonCancellable) {
+                                setZoneTouchable(true)
+                                zoneDisabled = false
+                            }
+                        }
+
+                        val useHole = touchZoneView?.isHoleModeActive == true
                         try {
-                            zoneDisabled = true
-                            setZoneTouchable(false)
-                            delay(60L)
+                            if (!useHole) {
+                                zoneDisabled = true
+                                setZoneTouchable(false)
+                                delay(60L)
+                            }
 
                             val downTime = SystemClock.uptimeMillis()
                             val resDown = injectTouchEvent(MotionEvent.ACTION_DOWN, cmd.x, cmd.y, downTime)
@@ -497,11 +512,15 @@ class PointerService : Service() {
                                 "Tap di (${cmd.x.toInt()}, ${cmd.y.toInt()}): Down=${resDown.success}, Up=${resUp.success}"
                             )
 
-                            delay(80L)
+                            if (!useHole) {
+                                delay(80L)
+                            }
                         } finally {
                             withContext(NonCancellable) {
-                                setZoneTouchable(true)
-                                zoneDisabled = false
+                                if (zoneDisabled) {
+                                    setZoneTouchable(true)
+                                    zoneDisabled = false
+                                }
                             }
                         }
                     }
@@ -511,10 +530,19 @@ class PointerService : Service() {
                             injectTouchEvent(MotionEvent.ACTION_UP, lastHoldX, lastHoldY, holdDownTime)
                             holdActive = false
                         }
+                        if (zoneDisabled) {
+                            withContext(NonCancellable) {
+                                setZoneTouchable(true)
+                                zoneDisabled = false
+                            }
+                        }
 
-                        zoneDisabled = true
-                        setZoneTouchable(false)
-                        delay(60L)
+                        val useHole = touchZoneView?.isHoleModeActive == true
+                        if (!useHole) {
+                            zoneDisabled = true
+                            setZoneTouchable(false)
+                            delay(60L)
+                        }
 
                         val downTime = SystemClock.uptimeMillis()
                         val resDown = injectTouchEvent(MotionEvent.ACTION_DOWN, cmd.x, cmd.y, downTime)
