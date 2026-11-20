@@ -21,6 +21,9 @@ class TouchZoneView(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_CANCEL && engine.isHolding) {
+            Logger.log("TouchZone", "Zona menerima CANCEL saat HOLD")
+        }
         return engine.onTouchEvent(event)
     }
 }

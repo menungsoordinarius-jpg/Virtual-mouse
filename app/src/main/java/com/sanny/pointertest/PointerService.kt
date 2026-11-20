@@ -28,11 +28,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Foreground Service untuk mengelola jendela kursor virtual dan zona sentuh layar penuh.
@@ -61,7 +61,21 @@ class PointerService : Service() {
     private var screenWidth: Int = 1080
     private var screenHeight: Int = 2400
     private var lastRotation: Int = -1
-    private val isInjecting = AtomicBoolean(false)
+
+    private sealed class GestureCommand {
+        data class Tap(val x: Float, val y: Float) : GestureCommand()
+        data class HoldStart(val x: Float, val y: Float) : GestureCommand()
+        data class HoldMove(val x: Float, val y: Float) : GestureCommand()
+        data class HoldEnd(
+            val x: Float,
+            val y: Float,
+            val totalDx: Float,
+            val totalDy: Float,
+            val isCancel: Boolean
+        ) : GestureCommand()
+    }
+
+    private val injectionChannel = Channel<GestureCommand>(Channel.UNLIMITED)
 
     // Listener Shizuku untuk memperbarui tampilan kursor (panah vs loading)
     private val binderReceivedListener = Shizuku.OnBinderReceivedListener {
@@ -105,6 +119,9 @@ class PointerService : Service() {
         )
 
         setupPointerEngineCallbacks()
+        serviceScope.launch(Dispatchers.IO) {
+            processInjectionQueue()
+        }
         createCursorWindow()
         createTouchZoneWindow()
 
@@ -140,13 +157,15 @@ class PointerService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         PointerServiceController.setRunning(false)
+        engine.cancelAll()
+        injectionChannel.close()
         removeShizukuListeners()
         displayManager?.unregisterDisplayListener(displayListener)
 
+        serviceScope.cancel()
         removeCursorWindow()
         removeTouchZoneWindow()
 
-        serviceScope.cancel()
         Logger.log("Pointer", "PointerService dihentikan, semua jendela overlay dilepas.")
     }
 
@@ -378,7 +397,7 @@ class PointerService : Service() {
     }
 
     // ==========================================
-    // Engine Callbacks & Calibration Tap
+    // Engine Callbacks & Serialized Gesture Injection
     // ==========================================
 
     private fun setupPointerEngineCallbacks() {
@@ -387,62 +406,226 @@ class PointerService : Service() {
             cursorView?.updatePosition(x, y)
         }
 
-        // UJI KALIBRASI SEMENTARA:
-        // Ketukan singkat di zona sentuh (< 200ms, < 10px gerak) menyuntik tap jari (SOURCE_TOUCHSCREEN)
-        // di posisi pointer saat ini untuk memverifikasi keselarasan posisi visual kursor dengan titik input sistem.
-        // CATATAN: Fitur ini adalah uji kalibrasi sementara dan akan digantikan pada tahap berikutnya.
-        engine.onCalibrationTapTriggered = tapCallback@{ targetX, targetY ->
-            if (!isInjecting.compareAndSet(false, true)) {
-                return@tapCallback
-            }
-            serviceScope.launch(Dispatchers.IO) {
-                try {
-                    setZoneTouchable(false)
-                    delay(60L)
+        // Gestur mode biasa: Tap, HOLD, Tahan lalu Geser (diserialkan via Channel UNLIMITED)
+        engine.onTapTriggered = { targetX, targetY ->
+            injectionChannel.trySend(GestureCommand.Tap(targetX, targetY))
+        }
 
-                    Logger.log(
-                        "Kalibrasi",
-                        "Uji Tap Kalibrasi di posisi pointer: (${targetX.toInt()}, ${targetY.toInt()})"
-                    )
-                    val downTime = SystemClock.uptimeMillis()
-                    val downEvent = EventInjector.createTouchEvent(
-                        action = MotionEvent.ACTION_DOWN,
-                        x = targetX,
-                        y = targetY,
-                        downTime = downTime,
-                        eventTime = downTime
-                    )
-                    val resDown = EventInjector.injectEvent(downEvent)
-                    downEvent.recycle()
+        engine.onHoldStarted = { targetX, targetY ->
+            cursorView?.setHolding(true)
+            injectionChannel.trySend(GestureCommand.HoldStart(targetX, targetY))
+        }
 
-                    delay(50L)
+        engine.onHoldMoved = { targetX, targetY ->
+            injectionChannel.trySend(GestureCommand.HoldMove(targetX, targetY))
+        }
 
-                    val upTime = SystemClock.uptimeMillis()
-                    val upEvent = EventInjector.createTouchEvent(
-                        action = MotionEvent.ACTION_UP,
-                        x = targetX,
-                        y = targetY,
-                        downTime = downTime,
-                        eventTime = upTime
-                    )
-                    val resUp = EventInjector.injectEvent(upEvent)
-                    upEvent.recycle()
+        engine.onHoldEnded = { targetX, targetY, totalDx, totalDy, isCancel ->
+            cursorView?.setHolding(false)
+            injectionChannel.trySend(
+                GestureCommand.HoldEnd(
+                    x = targetX,
+                    y = targetY,
+                    totalDx = totalDx,
+                    totalDy = totalDy,
+                    isCancel = isCancel
+                )
+            )
+        }
+    }
 
-                    // Catat setiap tap kalibrasi (KOMPONEN 7)
-                    Logger.log(
-                        "Kalibrasi",
-                        "Hasil Tap Kalibrasi (${targetX.toInt()}, ${targetY.toInt()}): Down=${resDown.success}, Up=${resUp.success}"
-                    )
+    private suspend fun processInjectionQueue() {
+        var holdActive = false
+        var holdDownTime = 0L
+        var lastHoldX = 0f
+        var lastHoldY = 0f
+        var lastMoveInjectTimeMs = 0L
+        var zoneDisabled = false
 
-                    delay(80L)
-                } finally {
-                    withContext(NonCancellable) {
+        suspend fun finishHold(endCmd: GestureCommand.HoldEnd) {
+            try {
+                lastHoldX = endCmd.x
+                lastHoldY = endCmd.y
+                val resUp = if (holdActive) {
+                    injectTouchEvent(MotionEvent.ACTION_UP, lastHoldX, lastHoldY, holdDownTime)
+                } else {
+                    InjectionResult(success = false, details = "HOLD belum menyuntik DOWN")
+                }
+                holdActive = false
+                Logger.log(
+                    "HOLD",
+                    "HOLD selesai (total gerak ${endCmd.totalDx.toInt()},${endCmd.totalDy.toInt()})" +
+                        "${if (endCmd.isCancel) " [CANCEL]" else ""}: Up=${resUp.success}"
+                )
+                delay(80L)
+            } finally {
+                withContext(NonCancellable) {
+                    if (zoneDisabled) {
                         setZoneTouchable(true)
-                        isInjecting.set(false)
+                        zoneDisabled = false
                     }
                 }
             }
         }
+
+        try {
+            var nextCmd: GestureCommand? = null
+            while (true) {
+                val cmd = nextCmd ?: injectionChannel.receiveCatching().getOrNull() ?: break
+                nextCmd = null
+
+                when (cmd) {
+                    is GestureCommand.Tap -> {
+                        if (holdActive) {
+                            injectTouchEvent(MotionEvent.ACTION_UP, lastHoldX, lastHoldY, holdDownTime)
+                            holdActive = false
+                        }
+                        try {
+                            zoneDisabled = true
+                            setZoneTouchable(false)
+                            delay(60L)
+
+                            val downTime = SystemClock.uptimeMillis()
+                            val resDown = injectTouchEvent(MotionEvent.ACTION_DOWN, cmd.x, cmd.y, downTime)
+
+                            delay(50L)
+
+                            val resUp = injectTouchEvent(MotionEvent.ACTION_UP, cmd.x, cmd.y, downTime)
+
+                            Logger.log(
+                                "Tap",
+                                "Tap di (${cmd.x.toInt()}, ${cmd.y.toInt()}): Down=${resDown.success}, Up=${resUp.success}"
+                            )
+
+                            delay(80L)
+                        } finally {
+                            withContext(NonCancellable) {
+                                setZoneTouchable(true)
+                                zoneDisabled = false
+                            }
+                        }
+                    }
+
+                    is GestureCommand.HoldStart -> {
+                        if (holdActive) {
+                            injectTouchEvent(MotionEvent.ACTION_UP, lastHoldX, lastHoldY, holdDownTime)
+                            holdActive = false
+                        }
+
+                        zoneDisabled = true
+                        setZoneTouchable(false)
+                        delay(60L)
+
+                        val downTime = SystemClock.uptimeMillis()
+                        val resDown = injectTouchEvent(MotionEvent.ACTION_DOWN, cmd.x, cmd.y, downTime)
+
+                        holdActive = true
+                        holdDownTime = downTime
+                        lastHoldX = cmd.x
+                        lastHoldY = cmd.y
+                        lastMoveInjectTimeMs = SystemClock.uptimeMillis()
+
+                        Logger.log(
+                            "HOLD",
+                            "HOLD dimulai di (${cmd.x.toInt()}, ${cmd.y.toInt()}): Down=${resDown.success}"
+                        )
+                    }
+
+                    is GestureCommand.HoldMove -> {
+                        if (!holdActive) continue
+
+                        var latestMove = cmd
+                        var pendingEnd: GestureCommand.HoldEnd? = null
+
+                        // Gabungkan MOVE yang menumpuk di channel
+                        while (true) {
+                            val queued = injectionChannel.tryReceive().getOrNull() ?: break
+                            when (queued) {
+                                is GestureCommand.HoldMove -> latestMove = queued
+                                is GestureCommand.HoldEnd -> {
+                                    pendingEnd = queued
+                                    break
+                                }
+                                else -> {
+                                    nextCmd = queued
+                                    break
+                                }
+                            }
+                        }
+
+                        // Maksimal satu suntikan MOVE per 8 ms
+                        val elapsed = SystemClock.uptimeMillis() - lastMoveInjectTimeMs
+                        if (elapsed < 8L) {
+                            delay(8L - elapsed)
+                            while (pendingEnd == null && nextCmd == null) {
+                                val queued = injectionChannel.tryReceive().getOrNull() ?: break
+                                when (queued) {
+                                    is GestureCommand.HoldMove -> latestMove = queued
+                                    is GestureCommand.HoldEnd -> {
+                                        pendingEnd = queued
+                                        break
+                                    }
+                                    else -> {
+                                        nextCmd = queued
+                                        break
+                                    }
+                                }
+                            }
+                        }
+
+                        lastHoldX = latestMove.x
+                        lastHoldY = latestMove.y
+                        injectTouchEvent(MotionEvent.ACTION_MOVE, lastHoldX, lastHoldY, holdDownTime)
+                        lastMoveInjectTimeMs = SystemClock.uptimeMillis()
+
+                        if (pendingEnd != null) {
+                            finishHold(pendingEnd)
+                        }
+                    }
+
+                    is GestureCommand.HoldEnd -> {
+                        finishHold(cmd)
+                    }
+                }
+            }
+        } finally {
+            withContext(NonCancellable) {
+                cursorView?.post {
+                    cursorView?.setHolding(false)
+                }
+                if (holdActive) {
+                    val resUp = injectTouchEvent(MotionEvent.ACTION_UP, lastHoldX, lastHoldY, holdDownTime)
+                    Logger.log(
+                        "HOLD",
+                        "HOLD selesai (pembersihan finally): Up=${resUp.success}"
+                    )
+                    holdActive = false
+                }
+                if (zoneDisabled) {
+                    setZoneTouchable(true)
+                    zoneDisabled = false
+                }
+            }
+        }
+    }
+
+    private fun injectTouchEvent(
+        action: Int,
+        x: Float,
+        y: Float,
+        downTime: Long
+    ): InjectionResult {
+        val eventTime = if (action == MotionEvent.ACTION_DOWN) downTime else SystemClock.uptimeMillis()
+        val event = EventInjector.createTouchEvent(
+            action = action,
+            x = x,
+            y = y,
+            downTime = downTime,
+            eventTime = eventTime
+        )
+        val result = EventInjector.injectEvent(event)
+        event.recycle()
+        return result
     }
 
     private suspend fun setZoneTouchable(touchable: Boolean) {

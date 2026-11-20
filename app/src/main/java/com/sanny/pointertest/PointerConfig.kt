@@ -1,12 +1,15 @@
 package com.sanny.pointertest
 
 /**
- * Objek Config terpusat untuk parameter pergerakan dan akselerasi pointer.
+ * Objek Config terpusat untuk parameter pergerakan, akselerasi, dan gestur pointer.
  * Sesuai instruksi:
  * - Sensitivitas dasar: 1.0
  * - v0: ambang batas kecepatan jari (px per ms)
  * - k: koefisien kenaikan linear akselerasi
  * - gainMax: gain maksimum (3.5)
+ * - tapMaxDurationMs: 200 ms
+ * - tapSlopPx: 10 px
+ * - holdThresholdMs: 300 ms
  */
 object PointerConfig {
     /** Sensitivitas dasar (skala pengali pergerakan saat di bawah ambang kecepatan) */
@@ -20,6 +23,15 @@ object PointerConfig {
 
     /** Gain maksimum akselerasi */
     var gainMax: Float = 3.5f
+
+    /** Durasi maksimum sentuhan agar dianggap Tap (ms) */
+    const val tapMaxDurationMs: Long = 200L
+
+    /** Jarak gerak maksimum (px) untuk Tap maupun syarat diam sebelum HOLD */
+    const val tapSlopPx: Float = 10f
+
+    /** Durasi jari diam (ms) untuk masuk status HOLD */
+    const val holdThresholdMs: Long = 300L
 
     /**
      * Menghitung faktor pengali pergerakan (gain) berdasarkan kecepatan sentuhan jari (px/ms).

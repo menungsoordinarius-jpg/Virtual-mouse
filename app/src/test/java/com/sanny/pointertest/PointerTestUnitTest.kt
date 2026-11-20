@@ -48,4 +48,11 @@ class PointerTestUnitTest {
         assertTrue(engine.pointerX <= 799f)
         assertTrue(engine.pointerY <= 1199f)
     }
+
+    @Test
+    fun testPointerConfigGestureConstants() {
+        assertEquals(200L, PointerConfig.tapMaxDurationMs)
+        assertEquals(10f, PointerConfig.tapSlopPx, 0.001f)
+        assertEquals(300L, PointerConfig.holdThresholdMs)
+    }
 }

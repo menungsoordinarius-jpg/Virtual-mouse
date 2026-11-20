@@ -13,6 +13,7 @@ import android.view.animation.LinearInterpolator
 /**
  * View kustom untuk menggambar kursor pointer di jendela TYPE_APPLICATION_OVERLAY.
  * - Saat Shizuku siap: kursor panah putih dengan garis tepi hitam (ujung panah tepat di posisi pointer).
+ * - Saat HOLD aktif: lingkaran tipis di sekitar panah sebagai penanda "tertekan".
  * - Saat Shizuku belum siap: ikon loading berputar (animasi 60 fps tanpa alokasi objek per frame).
  */
 class CursorView(context: Context) : View(context) {
@@ -23,6 +24,9 @@ class CursorView(context: Context) : View(context) {
         private set
 
     var isShizukuReady: Boolean = false
+        private set
+
+    var isHolding: Boolean = false
         private set
 
     private val density = resources.displayMetrics.density
@@ -39,6 +43,21 @@ class CursorView(context: Context) : View(context) {
         color = Color.BLACK
         strokeWidth = dp(1.8f)
         strokeJoin = Paint.Join.ROUND
+    }
+
+    // Penanda HOLD aktif: lingkaran tipis di sekitar panah
+    private val holdCenterX = dp(7f)
+    private val holdCenterY = dp(13f)
+    private val holdRingRadius = dp(18f)
+    private val holdRingOuterPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(2.4f)
+        color = Color.argb(170, 0, 0, 0)
+    }
+    private val holdRingInnerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(1.4f)
+        color = Color.parseColor("#38BDF8")
     }
 
     // Loading spinner assets
@@ -98,6 +117,12 @@ class CursorView(context: Context) : View(context) {
         postInvalidateOnAnimation()
     }
 
+    fun setHolding(holding: Boolean) {
+        if (isHolding == holding) return
+        isHolding = holding
+        postInvalidateOnAnimation()
+    }
+
     private fun startSpinnerAnimation() {
         if (spinnerAnimator == null) {
             spinnerAnimator = ValueAnimator.ofFloat(0f, 360f).apply {
@@ -127,6 +152,11 @@ class CursorView(context: Context) : View(context) {
         canvas.translate(pointerX, pointerY)
 
         if (isShizukuReady) {
+            if (isHolding) {
+                // Lingkaran tipis di sekitar panah sebagai penanda HOLD (tertekan)
+                canvas.drawCircle(holdCenterX, holdCenterY, holdRingRadius, holdRingOuterPaint)
+                canvas.drawCircle(holdCenterX, holdCenterY, holdRingRadius, holdRingInnerPaint)
+            }
             // Gambar kursor panah putih bergaris tepi hitam
             canvas.drawPath(arrowPath, arrowFillPaint)
             canvas.drawPath(arrowPath, arrowStrokePaint)
