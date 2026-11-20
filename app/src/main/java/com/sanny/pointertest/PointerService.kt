@@ -212,7 +212,7 @@ class PointerService : Service() {
             val bounds = wm.maximumWindowMetrics.bounds
             screenWidth = bounds.width().coerceAtLeast(1)
             screenHeight = bounds.height().coerceAtLeast(1)
-            lastRotation = display?.rotation ?: Surface.ROTATION_0
+            lastRotation = displayManager?.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.rotation ?: Surface.ROTATION_0
         } else {
             val dm = DisplayMetrics()
             @Suppress("DEPRECATION")
