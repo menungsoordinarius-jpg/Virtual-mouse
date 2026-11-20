@@ -282,7 +282,7 @@ class PointerService : Service() {
             gravity = Gravity.TOP or Gravity.START
             x = 0
             y = 0
-            alpha = 0.7f
+            alpha = 0.5f
         }
 
         cursorLayoutParams = lp
@@ -331,7 +331,7 @@ class PointerService : Service() {
             gravity = Gravity.TOP or Gravity.START
             x = 0
             y = 0
-            alpha = 0.1f
+            alpha = 0.5f
         }
 
         touchZoneLayoutParams = lp
