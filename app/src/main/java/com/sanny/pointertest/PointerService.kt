@@ -25,11 +25,14 @@ import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Foreground Service untuk mengelola jendela kursor virtual dan zona sentuh layar penuh.
@@ -58,6 +61,7 @@ class PointerService : Service() {
     private var screenWidth: Int = 1080
     private var screenHeight: Int = 2400
     private var lastRotation: Int = -1
+    private val isInjecting = AtomicBoolean(false)
 
     // Listener Shizuku untuk memperbarui tampilan kursor (panah vs loading)
     private val binderReceivedListener = Shizuku.OnBinderReceivedListener {
@@ -385,41 +389,77 @@ class PointerService : Service() {
         // Ketukan singkat di zona sentuh (< 200ms, < 10px gerak) menyuntik tap jari (SOURCE_TOUCHSCREEN)
         // di posisi pointer saat ini untuk memverifikasi keselarasan posisi visual kursor dengan titik input sistem.
         // CATATAN: Fitur ini adalah uji kalibrasi sementara dan akan digantikan pada tahap berikutnya.
-        engine.onCalibrationTapTriggered = { targetX, targetY ->
+        engine.onCalibrationTapTriggered = tapCallback@{ targetX, targetY ->
+            if (!isInjecting.compareAndSet(false, true)) {
+                return@tapCallback
+            }
             serviceScope.launch(Dispatchers.IO) {
+                try {
+                    setZoneTouchable(false)
+                    delay(60L)
+
+                    Logger.log(
+                        "Kalibrasi",
+                        "Uji Tap Kalibrasi di posisi pointer: (${targetX.toInt()}, ${targetY.toInt()})"
+                    )
+                    val downTime = SystemClock.uptimeMillis()
+                    val downEvent = EventInjector.createTouchEvent(
+                        action = MotionEvent.ACTION_DOWN,
+                        x = targetX,
+                        y = targetY,
+                        downTime = downTime,
+                        eventTime = downTime
+                    )
+                    val resDown = EventInjector.injectEvent(downEvent)
+                    downEvent.recycle()
+
+                    delay(50L)
+
+                    val upTime = SystemClock.uptimeMillis()
+                    val upEvent = EventInjector.createTouchEvent(
+                        action = MotionEvent.ACTION_UP,
+                        x = targetX,
+                        y = targetY,
+                        downTime = downTime,
+                        eventTime = upTime
+                    )
+                    val resUp = EventInjector.injectEvent(upEvent)
+                    upEvent.recycle()
+
+                    // Catat setiap tap kalibrasi (KOMPONEN 7)
+                    Logger.log(
+                        "Kalibrasi",
+                        "Hasil Tap Kalibrasi (${targetX.toInt()}, ${targetY.toInt()}): Down=${resDown.success}, Up=${resUp.success}"
+                    )
+
+                    delay(80L)
+                } finally {
+                    withContext(NonCancellable) {
+                        setZoneTouchable(true)
+                        isInjecting.set(false)
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun setZoneTouchable(touchable: Boolean) {
+        withContext(Dispatchers.Main) {
+            val view = touchZoneView ?: return@withContext
+            val lp = touchZoneLayoutParams ?: return@withContext
+            if (touchable) {
+                lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+            } else {
+                lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            }
+            try {
+                windowManager?.updateViewLayout(view, lp)
                 Logger.log(
-                    "Kalibrasi",
-                    "Uji Tap Kalibrasi di posisi pointer: (${targetX.toInt()}, ${targetY.toInt()})"
+                    "Pointer",
+                    if (touchable) "Zona sentuh aktif kembali" else "Zona sentuh dinonaktifkan sementara untuk suntikan"
                 )
-                val downTime = SystemClock.uptimeMillis()
-                val downEvent = EventInjector.createTouchEvent(
-                    action = MotionEvent.ACTION_DOWN,
-                    x = targetX,
-                    y = targetY,
-                    downTime = downTime,
-                    eventTime = downTime
-                )
-                val resDown = EventInjector.injectEvent(downEvent)
-                downEvent.recycle()
-
-                delay(50L)
-
-                val upTime = SystemClock.uptimeMillis()
-                val upEvent = EventInjector.createTouchEvent(
-                    action = MotionEvent.ACTION_UP,
-                    x = targetX,
-                    y = targetY,
-                    downTime = downTime,
-                    eventTime = upTime
-                )
-                val resUp = EventInjector.injectEvent(upEvent)
-                upEvent.recycle()
-
-                // Catat setiap tap kalibrasi (KOMPONEN 7)
-                Logger.log(
-                    "Kalibrasi",
-                    "Hasil Tap Kalibrasi (${targetX.toInt()}, ${targetY.toInt()}): Down=${resDown.success}, Up=${resUp.success}"
-                )
+            } catch (t: Throwable) {
+                Logger.log("Pointer", "Gagal mengubah status sentuh zona: ${t.message}")
             }
         }
     }
