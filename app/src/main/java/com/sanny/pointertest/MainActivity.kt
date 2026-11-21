@@ -84,6 +84,8 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        BackendSelector.init(this)
+
         setupShizukuListeners()
         setupPointerServiceControls()
         setupDeviceInfo()
@@ -188,6 +190,7 @@ class MainActivity : AppCompatActivity() {
             "Status",
             "Shizuku: ${if (isPingSuccess) "Berjalan" else "Mati"} | Izin: ${if (hasPermission) "Diberikan" else "Belum"}"
         )
+        BackendSelector.evaluate()
     }
 
     private fun requestShizukuPermission() {
@@ -228,11 +231,19 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Gagal membuka pengaturan aksesibilitas: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
+
+        binding.switchForceAccessibility.isChecked = BackendSelector.forceAccessibility.value
+        binding.switchForceAccessibility.setOnCheckedChangeListener { _, isChecked ->
+            BackendSelector.setForceAccessibility(this, isChecked)
+        }
     }
 
     private fun startPointer() {
-        // 1. Cek izin overlay
-        if (!OverlayManager.canDrawOverlays(this)) {
+        val isAccessibilityReady =
+            KeyboardAccessibilityService.isConnected.value && KeyboardAccessibilityService.instance != null
+
+        // 1. Cek izin overlay (tidak dibutuhkan jika service aksesibilitas tersambung)
+        if (!isAccessibilityReady && !OverlayManager.canDrawOverlays(this)) {
             Toast.makeText(
                 this,
                 "Mohon berikan izin 'Tampil di atas aplikasi lain' terlebih dahulu",
@@ -304,6 +315,48 @@ class MainActivity : AppCompatActivity() {
                 updateAccessibilityStatus()
             }
         }
+
+        lifecycleScope.launch {
+            BackendSelector.activeBackend.collect { backend ->
+                updateBackendStatusDisplay(backend)
+            }
+        }
+
+        lifecycleScope.launch {
+            PointerService.windowTypeStatus.collect { statusText ->
+                updateWindowTypeDisplay(statusText)
+            }
+        }
+    }
+
+    private fun updateBackendStatusDisplay(backend: InputBackend?) {
+        val label = backend?.name ?: "Tidak ada"
+        binding.tvActiveBackend.text = label
+        if (backend != null) {
+            binding.tvActiveBackend.setBackgroundResource(R.drawable.bg_status_badge_green)
+            binding.tvActiveBackend.setTextColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
+        } else {
+            binding.tvActiveBackend.setBackgroundResource(R.drawable.bg_status_badge_red)
+            binding.tvActiveBackend.setTextColor(ContextCompat.getColor(this, android.R.color.holo_red_dark))
+        }
+    }
+
+    private fun updateWindowTypeDisplay(statusText: String) {
+        binding.tvWindowType.text = statusText
+        when {
+            statusText.startsWith("ACCESSIBILITY_OVERLAY") -> {
+                binding.tvWindowType.setBackgroundResource(R.drawable.bg_status_badge_green)
+                binding.tvWindowType.setTextColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
+            }
+            statusText.startsWith("APPLICATION_OVERLAY") -> {
+                binding.tvWindowType.setBackgroundResource(R.drawable.bg_status_badge_red)
+                binding.tvWindowType.setTextColor(ContextCompat.getColor(this, android.R.color.holo_orange_dark))
+            }
+            else -> {
+                binding.tvWindowType.setBackgroundResource(R.drawable.bg_status_badge_red)
+                binding.tvWindowType.setTextColor(ContextCompat.getColor(this, android.R.color.holo_red_dark))
+            }
+        }
     }
 
     private fun updateAccessibilityStatus() {
@@ -317,6 +370,7 @@ class MainActivity : AppCompatActivity() {
             binding.tvAccessibilityStatus.setBackgroundResource(R.drawable.bg_status_badge_red)
             binding.tvAccessibilityStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_red_dark))
         }
+        BackendSelector.evaluate()
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {

@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.graphics.PixelFormat
@@ -30,6 +29,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
@@ -43,12 +45,17 @@ class PointerService : Service() {
         const val CHANNEL_ID = "pointer_service_channel"
         const val NOTIFICATION_ID = 2001
         const val ACTION_STOP_POINTER = "com.sanny.pointertest.ACTION_STOP_POINTER"
+
+        private val _windowTypeStatus = MutableStateFlow("Tidak aktif")
+        val windowTypeStatus: StateFlow<String> = _windowTypeStatus.asStateFlow()
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var windowManager: WindowManager? = null
+    private var cursorWindowManager: WindowManager? = null
+    private var touchZoneWindowManager: WindowManager? = null
     private var displayManager: DisplayManager? = null
 
     private val engine = PointerEngine()
@@ -57,6 +64,11 @@ class PointerService : Service() {
 
     private var cursorLayoutParams: WindowManager.LayoutParams? = null
     private var touchZoneLayoutParams: WindowManager.LayoutParams? = null
+
+    private var currentUsingAccessibilityOverlay: Boolean? = null
+    private var pendingWindowRecreate: Boolean = false
+    private var isHoldActive: Boolean = false
+    private var isServiceDestroyed: Boolean = false
 
     private var screenWidth: Int = 1080
     private var screenHeight: Int = 2400
@@ -77,16 +89,17 @@ class PointerService : Service() {
 
     private val injectionChannel = Channel<GestureCommand>(Channel.UNLIMITED)
 
-    // Listener Shizuku untuk memperbarui tampilan kursor (panah vs loading)
+    // Listener Shizuku untuk memicu evaluasi ulang backend aktif
     private val binderReceivedListener = Shizuku.OnBinderReceivedListener {
-        updateShizukuStatus()
+        BackendSelector.evaluate()
     }
     private val binderDeadListener = Shizuku.OnBinderDeadListener {
-        updateShizukuStatus()
+        EventInjector.reset()
+        BackendSelector.evaluate()
     }
     private val permissionResultListener =
         Shizuku.OnRequestPermissionResultListener { _, _ ->
-            updateShizukuStatus()
+            BackendSelector.evaluate()
         }
 
     // Listener rotasi dan perubahan ukuran display
@@ -118,17 +131,20 @@ class PointerService : Service() {
             "Pointer dimulai di posisi tengah: (${engine.pointerX.toInt()}, ${engine.pointerY.toInt()}) px (Ukuran layar: ${screenWidth}x${screenHeight})"
         )
 
+        BackendSelector.init(applicationContext)
         setupPointerEngineCallbacks()
         serviceScope.launch(Dispatchers.IO) {
             processInjectionQueue()
         }
-        createCursorWindow()
-        createTouchZoneWindow()
+        attachOverlayWindows()
 
         // Pantau status AccessibilityService & tinggi keyboard IME (KOMPONEN 6 & 7)
         observeKeyboardHeight()
+        observeActiveBackend()
+        observeAccessibilityConnection()
 
-        updateShizukuStatus()
+        BackendSelector.evaluate()
+        cursorView?.setBackendReady(BackendSelector.activeBackend.value != null)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -156,15 +172,19 @@ class PointerService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        isServiceDestroyed = true
         PointerServiceController.setRunning(false)
+        _windowTypeStatus.value = "Tidak aktif"
         engine.cancelAll()
         injectionChannel.close()
         removeShizukuListeners()
         displayManager?.unregisterDisplayListener(displayListener)
+        mainHandler.removeCallbacksAndMessages(null)
 
         serviceScope.cancel()
         removeCursorWindow()
         removeTouchZoneWindow()
+        currentUsingAccessibilityOverlay = null
 
         Logger.log("Pointer", "PointerService dihentikan, semua jendela overlay dilepas.")
     }
@@ -275,12 +295,60 @@ class PointerService : Service() {
     // Overlay Windows Management
     // ==========================================
 
-    private fun createCursorWindow() {
+    private fun resolveOverlayTarget(): Pair<WindowManager?, Boolean> {
+        val accService = if (KeyboardAccessibilityService.isConnected.value) {
+            KeyboardAccessibilityService.instance
+        } else {
+            null
+        }
+        if (accService != null) {
+            val accWm = accService.getSystemService(WindowManager::class.java)
+            if (accWm != null) {
+                return Pair(accWm, true)
+            }
+        }
+        return Pair(windowManager, false)
+    }
+
+    private fun attachOverlayWindows() {
+        if (isServiceDestroyed) return
+        val (targetWm, useAccessibilityOverlay) = resolveOverlayTarget()
+        currentUsingAccessibilityOverlay = useAccessibilityOverlay
+
+        val windowTypeLabel = if (useAccessibilityOverlay) {
+            "ACCESSIBILITY_OVERLAY (tepercaya, alpha 1.0)"
+        } else {
+            "APPLICATION_OVERLAY (cadangan, alpha 0.5/0.5)"
+        }
+        Logger.log("Pointer", "Jendela: $windowTypeLabel")
+        _windowTypeStatus.value = windowTypeLabel
+
+        createCursorWindow(targetWm, useAccessibilityOverlay)
+        createTouchZoneWindow(targetWm, useAccessibilityOverlay)
+
+        if (cursorView == null && touchZoneView == null) {
+            _windowTypeStatus.value = "Gagal dipasang (butuh izin overlay)"
+        }
+    }
+
+    private fun recreateOverlayWindows() {
+        if (isServiceDestroyed) return
+        pendingWindowRecreate = false
+        removeCursorWindow()
+        removeTouchZoneWindow()
+        attachOverlayWindows()
+    }
+
+    private fun createCursorWindow(targetWm: WindowManager?, useAccessibilityOverlay: Boolean) {
         val view = CursorView(this)
         view.updatePosition(engine.pointerX, engine.pointerY)
+        view.setBackendReady(BackendSelector.activeBackend.value != null)
+        view.setHolding(engine.isHolding)
         cursorView = view
 
-        val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val layoutFlag = if (useAccessibilityOverlay) {
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         } else {
             @Suppress("DEPRECATION")
@@ -301,33 +369,42 @@ class PointerService : Service() {
             gravity = Gravity.TOP or Gravity.START
             x = 0
             y = 0
-            alpha = 0.5f
+            alpha = if (useAccessibilityOverlay) 1.0f else 0.5f
         }
 
         cursorLayoutParams = lp
         try {
-            windowManager?.addView(view, lp)
+            val wm = targetWm ?: throw IllegalStateException("WindowManager tidak tersedia")
+            wm.addView(view, lp)
+            cursorWindowManager = wm
             Logger.log("Pointer", "Jendela kursor berhasil dipasang.")
         } catch (t: Throwable) {
+            cursorView = null
+            cursorLayoutParams = null
+            cursorWindowManager = null
             Logger.log("Pointer", "Gagal memasang jendela kursor: ${t.message}")
         }
     }
 
     private fun removeCursorWindow() {
+        val wm = cursorWindowManager ?: windowManager
         cursorView?.let { view ->
             try {
-                windowManager?.removeView(view)
+                wm?.removeView(view)
             } catch (_: Throwable) {}
         }
         cursorView = null
         cursorLayoutParams = null
+        cursorWindowManager = null
     }
 
-    private fun createTouchZoneWindow() {
+    private fun createTouchZoneWindow(targetWm: WindowManager?, useAccessibilityOverlay: Boolean) {
         val view = TouchZoneView(this, engine)
         touchZoneView = view
 
-        val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val layoutFlag = if (useAccessibilityOverlay) {
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         } else {
             @Suppress("DEPRECATION")
@@ -350,28 +427,35 @@ class PointerService : Service() {
             gravity = Gravity.TOP or Gravity.START
             x = 0
             y = 0
-            alpha = 0.5f
+            alpha = if (useAccessibilityOverlay) 1.0f else 0.5f
         }
 
         touchZoneLayoutParams = lp
         try {
-            windowManager?.addView(view, lp)
+            val wm = targetWm ?: throw IllegalStateException("WindowManager tidak tersedia")
+            wm.addView(view, lp)
+            touchZoneWindowManager = wm
             Logger.log("Pointer", "Jendela zona sentuh berhasil dipasang (Tinggi: ${initialHeight}px).")
             view.updatePointerHole(engine.pointerX, engine.pointerY)
             view.setupHoleMode()
         } catch (t: Throwable) {
+            touchZoneView = null
+            touchZoneLayoutParams = null
+            touchZoneWindowManager = null
             Logger.log("Pointer", "Gagal memasang jendela zona sentuh: ${t.message}")
         }
     }
 
     private fun removeTouchZoneWindow() {
+        val wm = touchZoneWindowManager ?: windowManager
         touchZoneView?.let { view ->
             try {
-                windowManager?.removeView(view)
+                wm?.removeView(view)
             } catch (_: Throwable) {}
         }
         touchZoneView = null
         touchZoneLayoutParams = null
+        touchZoneWindowManager = null
     }
 
     private fun updateWindowLayouts() {
@@ -380,7 +464,7 @@ class PointerService : Service() {
                 cursorLayoutParams?.let { lp ->
                     lp.width = screenWidth
                     lp.height = screenHeight
-                    windowManager?.updateViewLayout(view, lp)
+                    (cursorWindowManager ?: windowManager)?.updateViewLayout(view, lp)
                 }
             }
 
@@ -390,7 +474,7 @@ class PointerService : Service() {
                     val targetHeight = (screenHeight - kbHeight).coerceAtLeast(1)
                     lp.width = screenWidth
                     lp.height = targetHeight
-                    windowManager?.updateViewLayout(view, lp)
+                    (touchZoneWindowManager ?: windowManager)?.updateViewLayout(view, lp)
                 }
             }
         } catch (t: Throwable) {
@@ -415,6 +499,7 @@ class PointerService : Service() {
         }
 
         engine.onHoldStarted = { targetX, targetY ->
+            isHoldActive = true
             cursorView?.setHolding(true)
             injectionChannel.trySend(GestureCommand.HoldStart(targetX, targetY))
         }
@@ -438,8 +523,8 @@ class PointerService : Service() {
     }
 
     private suspend fun processInjectionQueue() {
-        var holdActive = false
-        var holdDownTime = 0L
+        var activeHoldBackend: InputBackend? = null
+        var holdDownDispatched = false
         var lastHoldX = 0f
         var lastHoldY = 0f
         var lastMoveInjectTimeMs = 0L
@@ -449,25 +534,35 @@ class PointerService : Service() {
             try {
                 lastHoldX = endCmd.x
                 lastHoldY = endCmd.y
-                val resUp = if (holdActive) {
-                    injectTouchEvent(MotionEvent.ACTION_UP, lastHoldX, lastHoldY, holdDownTime)
+                val holdBackend = activeHoldBackend
+                val shouldSendUp = holdDownDispatched
+                activeHoldBackend = null
+                holdDownDispatched = false
+
+                if (holdBackend != null && shouldSendUp) {
+                    if (endCmd.isCancel) {
+                        Logger.log("HOLD", "HOLD dibatalkan oleh zona sentuh [CANCEL]")
+                    }
+                    holdBackend.holdUp(lastHoldX, lastHoldY)
                 } else {
-                    InjectionResult(success = false, details = "HOLD belum menyuntik DOWN")
+                    Logger.log("HOLD", "HOLD selesai tanpa backend aktif")
                 }
-                holdActive = false
-                Logger.log(
-                    "HOLD",
-                    "HOLD selesai (total gerak ${endCmd.totalDx.toInt()},${endCmd.totalDy.toInt()})" +
-                        "${if (endCmd.isCancel) " [CANCEL]" else ""}: Up=${resUp.success}"
-                )
+
                 if (zoneDisabled) {
                     delay(80L)
                 }
             } finally {
                 withContext(NonCancellable) {
+                    BackendSelector.setHoldInProgress(false)
                     if (zoneDisabled) {
                         setZoneTouchable(true)
                         zoneDisabled = false
+                    }
+                    mainHandler.post {
+                        isHoldActive = false
+                        if (pendingWindowRecreate && !engine.isHolding && !isServiceDestroyed) {
+                            recreateOverlayWindows()
+                        }
                     }
                 }
             }
@@ -481,15 +576,28 @@ class PointerService : Service() {
 
                 when (cmd) {
                     is GestureCommand.Tap -> {
-                        if (holdActive) {
-                            injectTouchEvent(MotionEvent.ACTION_UP, lastHoldX, lastHoldY, holdDownTime)
-                            holdActive = false
+                        if (activeHoldBackend != null) {
+                            try {
+                                if (holdDownDispatched) {
+                                    activeHoldBackend?.holdUp(lastHoldX, lastHoldY)
+                                }
+                            } finally {
+                                activeHoldBackend = null
+                                holdDownDispatched = false
+                                BackendSelector.setHoldInProgress(false)
+                            }
                         }
                         if (zoneDisabled) {
                             withContext(NonCancellable) {
                                 setZoneTouchable(true)
                                 zoneDisabled = false
                             }
+                        }
+
+                        val backend = BackendSelector.activeBackend.value
+                        if (backend == null) {
+                            Logger.log("Pointer", "Tap diabaikan: tidak ada backend aktif")
+                            continue
                         }
 
                         val useHole = touchZoneView?.isHoleModeActive == true
@@ -500,17 +608,7 @@ class PointerService : Service() {
                                 delay(60L)
                             }
 
-                            val downTime = SystemClock.uptimeMillis()
-                            val resDown = injectTouchEvent(MotionEvent.ACTION_DOWN, cmd.x, cmd.y, downTime)
-
-                            delay(50L)
-
-                            val resUp = injectTouchEvent(MotionEvent.ACTION_UP, cmd.x, cmd.y, downTime)
-
-                            Logger.log(
-                                "Tap",
-                                "Tap di (${cmd.x.toInt()}, ${cmd.y.toInt()}): Down=${resDown.success}, Up=${resUp.success}"
-                            )
+                            backend.tap(cmd.x, cmd.y)
 
                             if (!useHole) {
                                 delay(80L)
@@ -526,9 +624,16 @@ class PointerService : Service() {
                     }
 
                     is GestureCommand.HoldStart -> {
-                        if (holdActive) {
-                            injectTouchEvent(MotionEvent.ACTION_UP, lastHoldX, lastHoldY, holdDownTime)
-                            holdActive = false
+                        if (activeHoldBackend != null) {
+                            try {
+                                if (holdDownDispatched) {
+                                    activeHoldBackend?.holdUp(lastHoldX, lastHoldY)
+                                }
+                            } finally {
+                                activeHoldBackend = null
+                                holdDownDispatched = false
+                                BackendSelector.setHoldInProgress(false)
+                            }
                         }
                         if (zoneDisabled) {
                             withContext(NonCancellable) {
@@ -537,6 +642,16 @@ class PointerService : Service() {
                             }
                         }
 
+                        val backend = BackendSelector.activeBackend.value
+                        if (backend == null) {
+                            Logger.log("HOLD", "HOLD diabaikan: tidak ada backend aktif")
+                            continue
+                        }
+
+                        BackendSelector.setHoldInProgress(true)
+                        activeHoldBackend = backend
+                        holdDownDispatched = false
+
                         val useHole = touchZoneView?.isHoleModeActive == true
                         if (!useHole) {
                             zoneDisabled = true
@@ -544,23 +659,16 @@ class PointerService : Service() {
                             delay(60L)
                         }
 
-                        val downTime = SystemClock.uptimeMillis()
-                        val resDown = injectTouchEvent(MotionEvent.ACTION_DOWN, cmd.x, cmd.y, downTime)
-
-                        holdActive = true
-                        holdDownTime = downTime
                         lastHoldX = cmd.x
                         lastHoldY = cmd.y
+                        holdDownDispatched = true
+                        backend.holdDown(cmd.x, cmd.y)
                         lastMoveInjectTimeMs = SystemClock.uptimeMillis()
-
-                        Logger.log(
-                            "HOLD",
-                            "HOLD dimulai di (${cmd.x.toInt()}, ${cmd.y.toInt()}): Down=${resDown.success}"
-                        )
                     }
 
                     is GestureCommand.HoldMove -> {
-                        if (!holdActive) continue
+                        val holdBackend = activeHoldBackend ?: continue
+                        if (!holdDownDispatched) continue
 
                         var latestMove = cmd
                         var pendingEnd: GestureCommand.HoldEnd? = null
@@ -581,21 +689,23 @@ class PointerService : Service() {
                             }
                         }
 
-                        // Maksimal satu suntikan MOVE per 8 ms
-                        val elapsed = SystemClock.uptimeMillis() - lastMoveInjectTimeMs
-                        if (elapsed < 8L) {
-                            delay(8L - elapsed)
-                            while (pendingEnd == null && nextCmd == null) {
-                                val queued = injectionChannel.tryReceive().getOrNull() ?: break
-                                when (queued) {
-                                    is GestureCommand.HoldMove -> latestMove = queued
-                                    is GestureCommand.HoldEnd -> {
-                                        pendingEnd = queued
-                                        break
-                                    }
-                                    else -> {
-                                        nextCmd = queued
-                                        break
+                        // Pertahankan batas 8 ms untuk ShizukuBackend agar perilaku identik
+                        if (holdBackend is ShizukuBackend) {
+                            val elapsed = SystemClock.uptimeMillis() - lastMoveInjectTimeMs
+                            if (elapsed < 8L) {
+                                delay(8L - elapsed)
+                                while (pendingEnd == null && nextCmd == null) {
+                                    val queued = injectionChannel.tryReceive().getOrNull() ?: break
+                                    when (queued) {
+                                        is GestureCommand.HoldMove -> latestMove = queued
+                                        is GestureCommand.HoldEnd -> {
+                                            pendingEnd = queued
+                                            break
+                                        }
+                                        else -> {
+                                            nextCmd = queued
+                                            break
+                                        }
                                     }
                                 }
                             }
@@ -603,7 +713,7 @@ class PointerService : Service() {
 
                         lastHoldX = latestMove.x
                         lastHoldY = latestMove.y
-                        injectTouchEvent(MotionEvent.ACTION_MOVE, lastHoldX, lastHoldY, holdDownTime)
+                        holdBackend.holdMove(lastHoldX, lastHoldY)
                         lastMoveInjectTimeMs = SystemClock.uptimeMillis()
 
                         if (pendingEnd != null) {
@@ -621,39 +731,19 @@ class PointerService : Service() {
                 cursorView?.post {
                     cursorView?.setHolding(false)
                 }
-                if (holdActive) {
-                    val resUp = injectTouchEvent(MotionEvent.ACTION_UP, lastHoldX, lastHoldY, holdDownTime)
-                    Logger.log(
-                        "HOLD",
-                        "HOLD selesai (pembersihan finally): Up=${resUp.success}"
-                    )
-                    holdActive = false
+                val holdBackend = activeHoldBackend
+                if (holdBackend != null && holdDownDispatched) {
+                    holdBackend.holdUp(lastHoldX, lastHoldY)
                 }
+                activeHoldBackend = null
+                holdDownDispatched = false
+                BackendSelector.setHoldInProgress(false)
                 if (zoneDisabled) {
                     setZoneTouchable(true)
                     zoneDisabled = false
                 }
             }
         }
-    }
-
-    private fun injectTouchEvent(
-        action: Int,
-        x: Float,
-        y: Float,
-        downTime: Long
-    ): InjectionResult {
-        val eventTime = if (action == MotionEvent.ACTION_DOWN) downTime else SystemClock.uptimeMillis()
-        val event = EventInjector.createTouchEvent(
-            action = action,
-            x = x,
-            y = y,
-            downTime = downTime,
-            eventTime = eventTime
-        )
-        val result = EventInjector.injectEvent(event)
-        event.recycle()
-        return result
     }
 
     private suspend fun setZoneTouchable(touchable: Boolean) {
@@ -666,7 +756,7 @@ class PointerService : Service() {
                 lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             }
             try {
-                windowManager?.updateViewLayout(view, lp)
+                (touchZoneWindowManager ?: windowManager)?.updateViewLayout(view, lp)
                 Logger.log(
                     "Pointer",
                     if (touchable) "Zona sentuh aktif kembali" else "Zona sentuh dinonaktifkan sementara untuk suntikan"
@@ -697,7 +787,7 @@ class PointerService : Service() {
                         if (lp.height != targetHeight) {
                             lp.height = targetHeight
                             try {
-                                windowManager?.updateViewLayout(view, lp)
+                                (touchZoneWindowManager ?: windowManager)?.updateViewLayout(view, lp)
                                 Logger.log(
                                     "Pointer",
                                     "Tinggi zona sentuh disesuaikan: ${targetHeight}px (Keyboard: ${kbHeight}px)"
@@ -734,12 +824,31 @@ class PointerService : Service() {
         } catch (_: Throwable) {}
     }
 
-    private fun updateShizukuStatus() {
-        val isReady = try {
-            Shizuku.pingBinder() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
-        } catch (_: Throwable) {
-            false
+    private fun observeActiveBackend() {
+        serviceScope.launch {
+            BackendSelector.activeBackend.collect { backend ->
+                cursorView?.setBackendReady(backend != null)
+            }
         }
-        cursorView?.setShizukuReady(isReady)
+    }
+
+    private fun observeAccessibilityConnection() {
+        serviceScope.launch {
+            KeyboardAccessibilityService.isConnected.collect { connected ->
+                val targetUseAcc = connected &&
+                    (KeyboardAccessibilityService.instance?.getSystemService(WindowManager::class.java) != null)
+                if (currentUsingAccessibilityOverlay != targetUseAcc) {
+                    if (isHoldActive || engine.isHolding) {
+                        pendingWindowRecreate = true
+                        Logger.log(
+                            "Pointer",
+                            "Status aksesibilitas berubah saat HOLD aktif; pemasangan ulang jendela ditunda."
+                        )
+                    } else {
+                        recreateOverlayWindows()
+                    }
+                }
+            }
+        }
     }
 }

@@ -12,9 +12,9 @@ import android.view.animation.LinearInterpolator
 
 /**
  * View kustom untuk menggambar kursor pointer di jendela TYPE_APPLICATION_OVERLAY.
- * - Saat Shizuku siap: kursor panah putih dengan garis tepi hitam (ujung panah tepat di posisi pointer).
+ * - Saat ada backend aktif: kursor panah putih dengan garis tepi hitam (ujung panah tepat di posisi pointer).
  * - Saat HOLD aktif: lingkaran tipis di sekitar panah sebagai penanda "tertekan".
- * - Saat Shizuku belum siap: ikon loading berputar (animasi 60 fps tanpa alokasi objek per frame).
+ * - Saat tidak ada backend sama sekali: ikon loading berputar (animasi 60 fps tanpa alokasi objek per frame).
  */
 class CursorView(context: Context) : View(context) {
 
@@ -23,7 +23,7 @@ class CursorView(context: Context) : View(context) {
     var pointerY: Float = 0f
         private set
 
-    var isShizukuReady: Boolean = false
+    var isBackendReady: Boolean = false
         private set
 
     var isHolding: Boolean = false
@@ -41,7 +41,7 @@ class CursorView(context: Context) : View(context) {
     private val arrowStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         color = Color.BLACK
-        strokeWidth = dp(1.8f)
+        strokeWidth = dp(1.3f)
         strokeJoin = Paint.Join.ROUND
     }
 
@@ -88,15 +88,16 @@ class CursorView(context: Context) : View(context) {
     }
 
     private fun buildArrowPath() {
+        val s = dp(1.15f)
         arrowPath.reset()
         // Ujung panah berada tepat di (0, 0)
         arrowPath.moveTo(0f, 0f)
-        arrowPath.lineTo(0f, dp(22f))
-        arrowPath.lineTo(dp(5.5f), dp(17.5f))
-        arrowPath.lineTo(dp(10f), dp(26.5f))
-        arrowPath.lineTo(dp(13.5f), dp(25f))
-        arrowPath.lineTo(dp(9.2f), dp(16f))
-        arrowPath.lineTo(dp(16f), dp(16f))
+        arrowPath.lineTo(0f, 17f * s)
+        arrowPath.lineTo(4.5f * s, 13f * s)
+        arrowPath.lineTo(7.5f * s, 20f * s)
+        arrowPath.lineTo(10f * s, 19f * s)
+        arrowPath.lineTo(7f * s, 12f * s)
+        arrowPath.lineTo(13f * s, 12f * s)
         arrowPath.close()
     }
 
@@ -106,15 +107,17 @@ class CursorView(context: Context) : View(context) {
         postInvalidateOnAnimation()
     }
 
-    fun setShizukuReady(ready: Boolean) {
-        if (isShizukuReady == ready) return
-        isShizukuReady = ready
-        if (!isShizukuReady) {
+    fun setBackendReady(ready: Boolean) {
+        val changed = isBackendReady != ready
+        isBackendReady = ready
+        if (!isBackendReady) {
             startSpinnerAnimation()
         } else {
             stopSpinnerAnimation()
         }
-        postInvalidateOnAnimation()
+        if (changed) {
+            postInvalidateOnAnimation()
+        }
     }
 
     fun setHolding(holding: Boolean) {
@@ -151,7 +154,7 @@ class CursorView(context: Context) : View(context) {
         canvas.save()
         canvas.translate(pointerX, pointerY)
 
-        if (isShizukuReady) {
+        if (isBackendReady) {
             if (isHolding) {
                 // Lingkaran tipis di sekitar panah sebagai penanda HOLD (tertekan)
                 canvas.drawCircle(holdCenterX, holdCenterY, holdRingRadius, holdRingOuterPaint)
@@ -161,7 +164,7 @@ class CursorView(context: Context) : View(context) {
             canvas.drawPath(arrowPath, arrowFillPaint)
             canvas.drawPath(arrowPath, arrowStrokePaint)
         } else {
-            // Gambar ikon loading yang berputar saat Shizuku belum siap
+            // Gambar ikon loading yang berputar hanya saat tidak ada backend sama sekali
             canvas.drawCircle(0f, 0f, spinnerRadius, spinnerTrackPaint)
             canvas.save()
             canvas.rotate(currentSpinnerAngle)

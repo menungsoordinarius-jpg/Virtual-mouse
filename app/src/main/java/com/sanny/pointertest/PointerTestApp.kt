@@ -15,5 +15,6 @@ class PointerTestApp : Application() {
                 Logger.log("App", "Gagal inisialisasi HiddenApiBypass: ${t.message}")
             }
         }
+        BackendSelector.init(this)
     }
 }
