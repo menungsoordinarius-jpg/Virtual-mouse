@@ -11,6 +11,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - name: Siapkan debug keystore (pakai yang ada di repo, kalau tidak ada buat baru)
+        run: test -f debug.keystore || keytool -genkeypair -v -keystore debug.keystore -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debug-keystore
+          path: debug.keystore
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 9.3.1
