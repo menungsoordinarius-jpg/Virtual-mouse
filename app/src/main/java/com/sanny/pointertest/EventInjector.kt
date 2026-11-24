@@ -147,9 +147,13 @@ object EventInjector {
 
     /**
      * Menyuntikkan InputEvent dengan mode INJECT_INPUT_EVENT_MODE_ASYNC.
-     * Mengembalikan InjectionResult dan mencatat log detail.
+     * Mengembalikan InjectionResult dan mencatat log detail bila logResult = true.
      */
-    fun injectEvent(event: InputEvent, mode: Int = INJECT_INPUT_EVENT_MODE_ASYNC): InjectionResult {
+    fun injectEvent(
+        event: InputEvent,
+        mode: Int = INJECT_INPUT_EVENT_MODE_ASYNC,
+        logResult: Boolean = true
+    ): InjectionResult {
         return try {
             val (manager, method) = getOrInitManager()
             val result = when (method.parameterTypes.size) {
@@ -159,7 +163,9 @@ object EventInjector {
             }
             val isSuccess = (result as? Boolean) ?: (result != null)
             val details = "Sukses=$isSuccess | Mode=$mode | Saluran=$channelDescription"
-            Logger.log("Injector", details)
+            if (logResult) {
+                Logger.log("Injector", details)
+            }
             InjectionResult(success = isSuccess, details = details)
         } catch (t: Throwable) {
             val actual = if (t is java.lang.reflect.InvocationTargetException && t.targetException != null) {
@@ -168,7 +174,9 @@ object EventInjector {
                 t
             }
             val details = "GAGAL: ${actual.javaClass.simpleName} - ${actual.message}"
-            Logger.log("Injector", details)
+            if (logResult) {
+                Logger.log("Injector", details)
+            }
             InjectionResult(success = false, details = details, exception = actual)
         }
     }

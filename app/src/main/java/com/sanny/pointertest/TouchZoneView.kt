@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewTreeObserver
@@ -18,7 +19,7 @@ import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 
 /**
- * View transparan untuk zona sentuh overlay (TYPE_APPLICATION_OVERLAY).
+ * View transparan untuk zona sentuh overlay.
  * Menangkap seluruh sentuhan dan meneruskannya ke PointerEngine.
  * Menggunakan ViewTreeObserver.OnComputeInternalInsetsListener (mode lubang)
  * agar suntikan di posisi pointer menembus zona tanpa menonaktifkan touchable seluruh zona.
@@ -32,6 +33,7 @@ class TouchZoneView(
         private const val TOUCHABLE_INSETS_REGION = 3
         private const val HOLE_HALF_SIZE_PX = 4
         private const val LAYOUT_THROTTLE_MS = 16L
+        private const val MOUSE_LEAK_LOG_THROTTLE_MS = 2000L
     }
 
     var isHoleModeActive: Boolean = false
@@ -44,6 +46,7 @@ class TouchZoneView(
     private var lastHoleUpdateTimeMs: Long = 0L
     private var pendingTrailingUpdate: Boolean = false
     private var holeUpdateCount: Int = 0
+    private var lastMouseLeakLogTimeMs: Long = 0L
 
     private val holeRect = Rect()
 
@@ -216,11 +219,31 @@ class TouchZoneView(
         } catch (_: Throwable) {}
     }
 
+    private fun checkMouseLeak(event: MotionEvent) {
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+            val now = SystemClock.uptimeMillis()
+            if (now - lastMouseLeakLogTimeMs >= MOUSE_LEAK_LOG_THROTTLE_MS) {
+                lastMouseLeakLogTimeMs = now
+                Logger.log("TouchZone", "Zona menerima event mouse (bocor)")
+            }
+        }
+    }
+
     override fun onDetachedFromWindow() {
         mainHandler.removeCallbacks(trailingLayoutRunnable)
         pendingTrailingUpdate = false
         unregisterHoleListener()
         super.onDetachedFromWindow()
+    }
+
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        checkMouseLeak(event)
+        return super.onGenericMotionEvent(event)
+    }
+
+    override fun onHoverEvent(event: MotionEvent): Boolean {
+        checkMouseLeak(event)
+        return super.onHoverEvent(event)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {

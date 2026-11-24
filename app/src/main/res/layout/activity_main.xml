@@ -326,6 +326,18 @@
                         android:textColor="#334155"
                         android:textSize="13sp" />
 
+                    <!-- Switch Mode Mouse (Shizuku) -->
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/switchMouseMode"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:minHeight="48dp"
+                        android:tag="mouse_mode_switch"
+                        android:text="Mode mouse"
+                        android:textColor="#334155"
+                        android:textSize="13sp" />
+
                     <!-- Tombol Mulai & Hentikan Pointer -->
                     <LinearLayout
                         android:layout_width="match_parent"

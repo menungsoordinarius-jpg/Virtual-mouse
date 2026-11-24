@@ -33,6 +33,18 @@ object PointerConfig {
     /** Durasi jari diam (ms) untuk masuk status HOLD */
     const val holdThresholdMs: Long = 300L
 
+    /** Jendela waktu ketukan kedua untuk double tap / klik kanan (ms) */
+    const val doubleTapWindowMs: Long = 250L
+
+    /** Jarak geser vertikal (px) per 1 notch scroll */
+    const val scrollPxPerNotch: Float = 40f
+
+    /** Arah scroll natural (true: jari naik = konten naik) */
+    var naturalScroll: Boolean = true
+
+    /** Gain maksimum akselerasi scroll dua jari */
+    var scrollGainMax: Float = 3.0f
+
     /**
      * Menghitung faktor pengali pergerakan (gain) berdasarkan kecepatan sentuhan jari (px/ms).
      * Jika speed <= v0, gain = baseSensitivity (1.0).
@@ -44,6 +56,18 @@ object PointerConfig {
         } else {
             val accelerated = baseSensitivity + k * (speedPxPerMs - v0)
             accelerated.coerceAtMost(gainMax)
+        }
+    }
+
+    /**
+     * Menghitung faktor pengali scroll dua jari (gain 1.0 sampai scrollGainMax 3.0).
+     */
+    fun calculateScrollGain(speedPxPerMs: Float): Float {
+        return if (speedPxPerMs <= v0) {
+            baseSensitivity
+        } else {
+            val accelerated = baseSensitivity + k * (speedPxPerMs - v0)
+            accelerated.coerceAtMost(scrollGainMax)
         }
     }
 }

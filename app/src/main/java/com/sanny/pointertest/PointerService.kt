@@ -45,6 +45,7 @@ class PointerService : Service() {
         const val CHANNEL_ID = "pointer_service_channel"
         const val NOTIFICATION_ID = 2001
         const val ACTION_STOP_POINTER = "com.sanny.pointertest.ACTION_STOP_POINTER"
+        const val ACTION_TOGGLE_MODE = "com.sanny.pointertest.ACTION_TOGGLE_MODE"
 
         private val _windowTypeStatus = MutableStateFlow("Tidak aktif")
         val windowTypeStatus: StateFlow<String> = _windowTypeStatus.asStateFlow()
@@ -68,6 +69,8 @@ class PointerService : Service() {
     private var currentUsingAccessibilityOverlay: Boolean? = null
     private var pendingWindowRecreate: Boolean = false
     private var isHoldActive: Boolean = false
+    private var isMouseButtonHeldInQueue: Boolean = false
+    private var pendingReturnToNormalOnShizukuDead: Boolean = false
     private var isServiceDestroyed: Boolean = false
 
     private var screenWidth: Int = 1080
@@ -75,6 +78,7 @@ class PointerService : Service() {
     private var lastRotation: Int = -1
 
     private sealed class GestureCommand {
+        // Mode NORMAL
         data class Tap(val x: Float, val y: Float) : GestureCommand()
         data class HoldStart(val x: Float, val y: Float) : GestureCommand()
         data class HoldMove(val x: Float, val y: Float) : GestureCommand()
@@ -85,21 +89,47 @@ class PointerService : Service() {
             val totalDy: Float,
             val isCancel: Boolean
         ) : GestureCommand()
+
+        // Mode MOUSE
+        data class MouseHoverMove(val x: Float, val y: Float) : GestureCommand()
+        data class MouseClick(val x: Float, val y: Float, val button: Int) : GestureCommand()
+        data class MouseDragStart(val x: Float, val y: Float, val button: Int) : GestureCommand()
+        data class MouseDragMove(val x: Float, val y: Float, val button: Int) : GestureCommand()
+        data class MouseDragEnd(
+            val x: Float,
+            val y: Float,
+            val totalDx: Float,
+            val totalDy: Float,
+            val button: Int,
+            val isCancel: Boolean
+        ) : GestureCommand()
+        data class MouseScroll(val x: Float, val y: Float, val vScroll: Float) : GestureCommand()
     }
 
     private val injectionChannel = Channel<GestureCommand>(Channel.UNLIMITED)
 
-    // Listener Shizuku untuk memicu evaluasi ulang backend aktif
+    // Listener Shizuku untuk memicu evaluasi ulang backend aktif & keselamatan mode mouse
     private val binderReceivedListener = Shizuku.OnBinderReceivedListener {
         BackendSelector.evaluate()
+        mainHandler.post {
+            updateCursorBackendReady()
+        }
     }
     private val binderDeadListener = Shizuku.OnBinderDeadListener {
         EventInjector.reset()
         BackendSelector.evaluate()
+        mainHandler.post {
+            handleShizukuUnavailableInMouseMode()
+            updateCursorBackendReady()
+        }
     }
     private val permissionResultListener =
         Shizuku.OnRequestPermissionResultListener { _, _ ->
             BackendSelector.evaluate()
+            mainHandler.post {
+                handleShizukuUnavailableInMouseMode()
+                updateCursorBackendReady()
+            }
         }
 
     // Listener rotasi dan perubahan ukuran display
@@ -132,26 +162,43 @@ class PointerService : Service() {
         )
 
         BackendSelector.init(applicationContext)
+        if (PointerModeController.mode.value == PointerMode.MOUSE && !PointerModeController.isShizukuReady()) {
+            PointerModeController.forceReturnToNormalFromShizukuLoss()
+        }
+        engine.setMode(PointerModeController.mode.value)
         setupPointerEngineCallbacks()
         serviceScope.launch(Dispatchers.IO) {
             processInjectionQueue()
         }
         attachOverlayWindows()
 
-        // Pantau status AccessibilityService & tinggi keyboard IME (KOMPONEN 6 & 7)
+        // Pantau status AccessibilityService, tinggi keyboard IME, backend, & mode pointer
         observeKeyboardHeight()
         observeActiveBackend()
         observeAccessibilityConnection()
+        observePointerMode()
 
         BackendSelector.evaluate()
-        cursorView?.setBackendReady(BackendSelector.activeBackend.value != null)
+        updateCursorBackendReady()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP_POINTER) {
-            Logger.log("Pointer", "Perintah berhenti diterima dari notifikasi.")
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP_POINTER -> {
+                Logger.log("Pointer", "Perintah berhenti diterima dari notifikasi.")
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_TOGGLE_MODE -> {
+                val target = if (PointerModeController.mode.value == PointerMode.MOUSE) {
+                    PointerMode.NORMAL
+                } else {
+                    PointerMode.MOUSE
+                }
+                PointerModeController.setMode(this, target)
+                updateNotification()
+                return START_STICKY
+            }
         }
 
         val notification = createNotification()
@@ -234,15 +281,44 @@ class PointerService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val isMouseMode = PointerModeController.mode.value == PointerMode.MOUSE
+        val modeLabel = if (isMouseMode) "Mode Mouse" else "Mode Biasa"
+        val toggleActionLabel = if (isMouseMode) "Mode Biasa" else "Mode Mouse"
+
+        val toggleModeIntent = Intent(this, PointerService::class.java).apply {
+            action = ACTION_TOGGLE_MODE
+        }
+        val toggleModePendingIntent = PendingIntent.getService(
+            this,
+            2,
+            toggleModeIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Pointer aktif")
-            .setContentText("Kursor virtual dan zona sentuh berjalan di atas layar")
+            .setContentTitle("Pointer aktif ($modeLabel)")
+            .setContentText(
+                if (isMouseMode) {
+                    "Mode aktif: Mode Mouse (Shizuku)"
+                } else {
+                    "Mode aktif: Mode Biasa"
+                }
+            )
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(openPendingIntent)
+            .addAction(android.R.drawable.ic_menu_manage, toggleActionLabel, toggleModePendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Hentikan", stopPendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
+    }
+
+    private fun updateNotification() {
+        if (isServiceDestroyed) return
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            nm?.notify(NOTIFICATION_ID, createNotification())
+        } catch (_: Throwable) {}
     }
 
     // ==========================================
@@ -520,6 +596,55 @@ class PointerService : Service() {
                 )
             )
         }
+
+        // Gestur mode mouse: Hover, Klik Kiri/Kanan, Drag Kiri/Kanan, Scroll 2 Jari
+        engine.onMouseHoverMoved = { targetX, targetY ->
+            injectionChannel.trySend(GestureCommand.MouseHoverMove(targetX, targetY))
+        }
+
+        engine.onMouseLeftClick = { targetX, targetY ->
+            injectionChannel.trySend(
+                GestureCommand.MouseClick(targetX, targetY, MotionEvent.BUTTON_PRIMARY)
+            )
+        }
+
+        engine.onMouseRightClick = { targetX, targetY ->
+            injectionChannel.trySend(
+                GestureCommand.MouseClick(targetX, targetY, MotionEvent.BUTTON_SECONDARY)
+            )
+        }
+
+        engine.onMouseDragStarted = { targetX, targetY, button ->
+            isMouseButtonHeldInQueue = true
+            cursorView?.setHolding(true)
+            injectionChannel.trySend(GestureCommand.MouseDragStart(targetX, targetY, button))
+        }
+
+        engine.onMouseDragMoved = { targetX, targetY, button ->
+            injectionChannel.trySend(GestureCommand.MouseDragMove(targetX, targetY, button))
+        }
+
+        engine.onMouseDragEnded = { targetX, targetY, totalDx, totalDy, button, isCancel ->
+            cursorView?.setHolding(false)
+            injectionChannel.trySend(
+                GestureCommand.MouseDragEnd(
+                    x = targetX,
+                    y = targetY,
+                    totalDx = totalDx,
+                    totalDy = totalDy,
+                    button = button,
+                    isCancel = isCancel
+                )
+            )
+        }
+
+        engine.onMouseScroll = { targetX, targetY, vScroll ->
+            injectionChannel.trySend(GestureCommand.MouseScroll(targetX, targetY, vScroll))
+        }
+
+        engine.onTouchGestureFinished = {
+            checkPendingActionsBetweenGestures()
+        }
     }
 
     private suspend fun processInjectionQueue() {
@@ -529,6 +654,42 @@ class PointerService : Service() {
         var lastHoldY = 0f
         var lastMoveInjectTimeMs = 0L
         var zoneDisabled = false
+
+        // State mode MOUSE di coroutine antrean terserialkan
+        var activeMouseButton = 0
+        var mouseDownTime = 0L
+        var mouseDragStartX = 0f
+        var mouseDragStartY = 0f
+        var lastMouseDragX = 0f
+        var lastMouseDragY = 0f
+        var lastMouseMoveInjectTimeMs = 0L
+        var lastHoverInjectTimeMs = 0L
+        var hoverEventCount = 0
+
+        fun injectMouseButtonEvent(
+            action: Int,
+            x: Float,
+            y: Float,
+            buttonState: Int,
+            actionButton: Int,
+            downTime: Long,
+            eventTime: Long,
+            logInjector: Boolean = false
+        ): InjectionResult {
+            val event = EventInjector.createMouseButtonEvent(
+                action = action,
+                x = x,
+                y = y,
+                buttonState = buttonState,
+                actionButton = actionButton,
+                deviceId = 0,
+                downTime = downTime,
+                eventTime = eventTime
+            )
+            val result = EventInjector.injectEvent(event, logResult = logInjector)
+            event.recycle()
+            return result
+        }
 
         suspend fun finishHold(endCmd: GestureCommand.HoldEnd) {
             try {
@@ -560,9 +721,60 @@ class PointerService : Service() {
                     }
                     mainHandler.post {
                         isHoldActive = false
-                        if (pendingWindowRecreate && !engine.isHolding && !isServiceDestroyed) {
-                            recreateOverlayWindows()
-                        }
+                        checkPendingActionsBetweenGestures()
+                    }
+                }
+            }
+        }
+
+        suspend fun finishMouseDrag(endCmd: GestureCommand.MouseDragEnd?) {
+            try {
+                val btn = activeMouseButton
+                if (btn != 0) {
+                    val targetX = endCmd?.x ?: lastMouseDragX
+                    val targetY = endCmd?.y ?: lastMouseDragY
+                    val totalDx = endCmd?.totalDx ?: (targetX - mouseDragStartX)
+                    val totalDy = endCmd?.totalDy ?: (targetY - mouseDragStartY)
+                    val btnLabel = if (btn == MotionEvent.BUTTON_SECONDARY) "kanan" else "kiri"
+
+                    if (endCmd?.isCancel == true) {
+                        Logger.log("Mouse", "Mouse: drag $btnLabel dibatalkan [CANCEL]")
+                    }
+
+                    withContext(NonCancellable) {
+                        val upTime = SystemClock.uptimeMillis()
+                        val resRelease = injectMouseButtonEvent(
+                            action = MotionEvent.ACTION_BUTTON_RELEASE,
+                            x = targetX,
+                            y = targetY,
+                            buttonState = 0,
+                            actionButton = btn,
+                            downTime = mouseDownTime,
+                            eventTime = upTime
+                        )
+                        val resUp = injectMouseButtonEvent(
+                            action = MotionEvent.ACTION_UP,
+                            x = targetX,
+                            y = targetY,
+                            buttonState = 0,
+                            actionButton = 0,
+                            downTime = mouseDownTime,
+                            eventTime = upTime + 1
+                        )
+                        Logger.log(
+                            "Mouse",
+                            "Mouse: drag $btnLabel selesai (${totalDx.toInt()},${totalDy.toInt()}) | " +
+                                "${MotionEvent.actionToString(MotionEvent.ACTION_BUTTON_RELEASE)}=${resRelease.success}, " +
+                                "${MotionEvent.actionToString(MotionEvent.ACTION_UP)}=${resUp.success}"
+                        )
+                    }
+                }
+            } finally {
+                withContext(NonCancellable) {
+                    activeMouseButton = 0
+                    mainHandler.post {
+                        isMouseButtonHeldInQueue = false
+                        checkPendingActionsBetweenGestures()
                     }
                 }
             }
@@ -724,6 +936,267 @@ class PointerService : Service() {
                     is GestureCommand.HoldEnd -> {
                         finishHold(cmd)
                     }
+
+                    // ==========================================
+                    // Eksekusi Event Mode MOUSE (Shizuku)
+                    // ==========================================
+
+                    is GestureCommand.MouseHoverMove -> {
+                        var latestHover = cmd
+                        while (true) {
+                            val queued = injectionChannel.tryReceive().getOrNull() ?: break
+                            if (queued is GestureCommand.MouseHoverMove) {
+                                latestHover = queued
+                            } else {
+                                nextCmd = queued
+                                break
+                            }
+                        }
+
+                        val elapsed = SystemClock.uptimeMillis() - lastHoverInjectTimeMs
+                        if (elapsed < 16L) {
+                            delay(16L - elapsed)
+                            while (nextCmd == null) {
+                                val queued = injectionChannel.tryReceive().getOrNull() ?: break
+                                if (queued is GestureCommand.MouseHoverMove) {
+                                    latestHover = queued
+                                } else {
+                                    nextCmd = queued
+                                    break
+                                }
+                            }
+                        }
+
+                        val event = EventInjector.createMouseHoverEvent(
+                            action = MotionEvent.ACTION_HOVER_MOVE,
+                            x = latestHover.x,
+                            y = latestHover.y
+                        )
+                        val res = EventInjector.injectEvent(event, logResult = false)
+                        event.recycle()
+                        lastHoverInjectTimeMs = SystemClock.uptimeMillis()
+
+                        hoverEventCount++
+                        if (hoverEventCount == 1 || hoverEventCount % 30 == 0 || !res.success) {
+                            Logger.log(
+                                "Mouse",
+                                "Mouse: ${MotionEvent.actionToString(MotionEvent.ACTION_HOVER_MOVE)} #$hoverEventCount " +
+                                    "(${latestHover.x.toInt()}, ${latestHover.y.toInt()}) -> Sukses=${res.success}"
+                            )
+                        }
+                    }
+
+                    is GestureCommand.MouseClick -> {
+                        if (activeMouseButton != 0) {
+                            finishMouseDrag(null)
+                        }
+
+                        val clickLabel = if (cmd.button == MotionEvent.BUTTON_SECONDARY) "klik kanan" else "klik kiri"
+                        val clickDownTime = SystemClock.uptimeMillis()
+                        var pressed = false
+                        var resDown = InjectionResult(false, "Belum disuntik")
+                        var resPress = InjectionResult(false, "Belum disuntik")
+                        var resRelease = InjectionResult(false, "Belum disuntik")
+                        var resUp = InjectionResult(false, "Belum disuntik")
+
+                        try {
+                            resDown = injectMouseButtonEvent(
+                                action = MotionEvent.ACTION_DOWN,
+                                x = cmd.x,
+                                y = cmd.y,
+                                buttonState = cmd.button,
+                                actionButton = 0,
+                                downTime = clickDownTime,
+                                eventTime = clickDownTime
+                            )
+                            resPress = injectMouseButtonEvent(
+                                action = MotionEvent.ACTION_BUTTON_PRESS,
+                                x = cmd.x,
+                                y = cmd.y,
+                                buttonState = cmd.button,
+                                actionButton = cmd.button,
+                                downTime = clickDownTime,
+                                eventTime = clickDownTime + 10
+                            )
+                            pressed = true
+                            delay(50L)
+                        } finally {
+                            if (pressed) {
+                                withContext(NonCancellable) {
+                                    val upTime = SystemClock.uptimeMillis()
+                                    resRelease = injectMouseButtonEvent(
+                                        action = MotionEvent.ACTION_BUTTON_RELEASE,
+                                        x = cmd.x,
+                                        y = cmd.y,
+                                        buttonState = 0,
+                                        actionButton = cmd.button,
+                                        downTime = clickDownTime,
+                                        eventTime = upTime
+                                    )
+                                    resUp = injectMouseButtonEvent(
+                                        action = MotionEvent.ACTION_UP,
+                                        x = cmd.x,
+                                        y = cmd.y,
+                                        buttonState = 0,
+                                        actionButton = 0,
+                                        downTime = clickDownTime,
+                                        eventTime = upTime + 1
+                                    )
+                                }
+                            }
+                        }
+
+                        Logger.log(
+                            "Mouse",
+                            "Mouse: $clickLabel (${cmd.x.toInt()}, ${cmd.y.toInt()}) | " +
+                                "${MotionEvent.actionToString(MotionEvent.ACTION_DOWN)}=${resDown.success}, " +
+                                "${MotionEvent.actionToString(MotionEvent.ACTION_BUTTON_PRESS)}=${resPress.success}, " +
+                                "${MotionEvent.actionToString(MotionEvent.ACTION_BUTTON_RELEASE)}=${resRelease.success}, " +
+                                "${MotionEvent.actionToString(MotionEvent.ACTION_UP)}=${resUp.success}"
+                        )
+                    }
+
+                    is GestureCommand.MouseDragStart -> {
+                        if (activeMouseButton != 0) {
+                            finishMouseDrag(null)
+                        }
+
+                        val btnLabel = if (cmd.button == MotionEvent.BUTTON_SECONDARY) "kanan" else "kiri"
+                        mouseDownTime = SystemClock.uptimeMillis()
+                        mouseDragStartX = cmd.x
+                        mouseDragStartY = cmd.y
+                        lastMouseDragX = cmd.x
+                        lastMouseDragY = cmd.y
+                        activeMouseButton = cmd.button
+
+                        val resDown = injectMouseButtonEvent(
+                            action = MotionEvent.ACTION_DOWN,
+                            x = cmd.x,
+                            y = cmd.y,
+                            buttonState = cmd.button,
+                            actionButton = 0,
+                            downTime = mouseDownTime,
+                            eventTime = mouseDownTime
+                        )
+                        val resPress = injectMouseButtonEvent(
+                            action = MotionEvent.ACTION_BUTTON_PRESS,
+                            x = cmd.x,
+                            y = cmd.y,
+                            buttonState = cmd.button,
+                            actionButton = cmd.button,
+                            downTime = mouseDownTime,
+                            eventTime = mouseDownTime + 10
+                        )
+                        lastMouseMoveInjectTimeMs = SystemClock.uptimeMillis()
+
+                        Logger.log(
+                            "Mouse",
+                            "Mouse: drag $btnLabel mulai (${cmd.x.toInt()}, ${cmd.y.toInt()}) | " +
+                                "${MotionEvent.actionToString(MotionEvent.ACTION_DOWN)}=${resDown.success}, " +
+                                "${MotionEvent.actionToString(MotionEvent.ACTION_BUTTON_PRESS)}=${resPress.success}"
+                        )
+                    }
+
+                    is GestureCommand.MouseDragMove -> {
+                        val btn = activeMouseButton
+                        if (btn == 0) continue
+
+                        var latestMove = cmd
+                        var pendingEnd: GestureCommand.MouseDragEnd? = null
+
+                        while (true) {
+                            val queued = injectionChannel.tryReceive().getOrNull() ?: break
+                            when (queued) {
+                                is GestureCommand.MouseDragMove -> latestMove = queued
+                                is GestureCommand.MouseDragEnd -> {
+                                    pendingEnd = queued
+                                    break
+                                }
+                                else -> {
+                                    nextCmd = queued
+                                    break
+                                }
+                            }
+                        }
+
+                        val elapsed = SystemClock.uptimeMillis() - lastMouseMoveInjectTimeMs
+                        if (elapsed < 8L) {
+                            delay(8L - elapsed)
+                            while (pendingEnd == null && nextCmd == null) {
+                                val queued = injectionChannel.tryReceive().getOrNull() ?: break
+                                when (queued) {
+                                    is GestureCommand.MouseDragMove -> latestMove = queued
+                                    is GestureCommand.MouseDragEnd -> {
+                                        pendingEnd = queued
+                                        break
+                                    }
+                                    else -> {
+                                        nextCmd = queued
+                                        break
+                                    }
+                                }
+                            }
+                        }
+
+                        lastMouseDragX = latestMove.x
+                        lastMouseDragY = latestMove.y
+                        val resMove = injectMouseButtonEvent(
+                            action = MotionEvent.ACTION_MOVE,
+                            x = lastMouseDragX,
+                            y = lastMouseDragY,
+                            buttonState = btn,
+                            actionButton = 0,
+                            downTime = mouseDownTime,
+                            eventTime = SystemClock.uptimeMillis()
+                        )
+                        lastMouseMoveInjectTimeMs = SystemClock.uptimeMillis()
+
+                        if (!resMove.success) {
+                            Logger.log(
+                                "Mouse",
+                                "Mouse: ${MotionEvent.actionToString(MotionEvent.ACTION_MOVE)}=${resMove.success}"
+                            )
+                        }
+
+                        if (pendingEnd != null) {
+                            finishMouseDrag(pendingEnd)
+                        }
+                    }
+
+                    is GestureCommand.MouseDragEnd -> {
+                        finishMouseDrag(cmd)
+                    }
+
+                    is GestureCommand.MouseScroll -> {
+                        var totalVScroll = cmd.vScroll
+                        var targetX = cmd.x
+                        var targetY = cmd.y
+                        while (true) {
+                            val queued = injectionChannel.tryReceive().getOrNull() ?: break
+                            if (queued is GestureCommand.MouseScroll) {
+                                totalVScroll += queued.vScroll
+                                targetX = queued.x
+                                targetY = queued.y
+                            } else {
+                                nextCmd = queued
+                                break
+                            }
+                        }
+
+                        val scrollEvent = EventInjector.createMouseScrollEvent(
+                            x = targetX,
+                            y = targetY,
+                            vScroll = totalVScroll
+                        )
+                        val res = EventInjector.injectEvent(scrollEvent, logResult = false)
+                        scrollEvent.recycle()
+
+                        Logger.log(
+                            "Mouse",
+                            "Mouse: scroll nilai=${"%.2f".format(totalVScroll)} (${targetX.toInt()}, ${targetY.toInt()}) | " +
+                                "${MotionEvent.actionToString(MotionEvent.ACTION_SCROLL)}=${res.success}"
+                        )
+                    }
                 }
             }
         } finally {
@@ -741,6 +1214,11 @@ class PointerService : Service() {
                 if (zoneDisabled) {
                     setZoneTouchable(true)
                     zoneDisabled = false
+                }
+
+                // Selalu lepaskan tombol mouse yang tertekan saat coroutine/service berhenti
+                if (activeMouseButton != 0) {
+                    finishMouseDrag(null)
                 }
             }
         }
@@ -824,10 +1302,70 @@ class PointerService : Service() {
         } catch (_: Throwable) {}
     }
 
+    private fun updateCursorBackendReady() {
+        val ready = if (PointerModeController.mode.value == PointerMode.MOUSE) {
+            PointerModeController.isShizukuReady()
+        } else {
+            BackendSelector.activeBackend.value != null
+        }
+        cursorView?.setBackendReady(ready)
+    }
+
+    private fun handleShizukuUnavailableInMouseMode() {
+        if (PointerModeController.mode.value == PointerMode.MOUSE && !PointerModeController.isShizukuReady()) {
+            if (isMouseButtonHeldInQueue || engine.isGestureActive) {
+                pendingReturnToNormalOnShizukuDead = true
+                Logger.log(
+                    "Mode",
+                    "Shizuku mati saat tombol/gestur mouse aktif; kembali ke NORMAL ditunda hingga dilepas."
+                )
+            } else {
+                pendingReturnToNormalOnShizukuDead = false
+                PointerModeController.forceReturnToNormalFromShizukuLoss()
+            }
+        }
+    }
+
+    private fun checkPendingActionsBetweenGestures() {
+        if (isServiceDestroyed) return
+
+        if (pendingReturnToNormalOnShizukuDead &&
+            !isMouseButtonHeldInQueue &&
+            !engine.isGestureActive
+        ) {
+            pendingReturnToNormalOnShizukuDead = false
+            PointerModeController.forceReturnToNormalFromShizukuLoss()
+        }
+
+        if (pendingWindowRecreate &&
+            !isHoldActive &&
+            !isMouseButtonHeldInQueue &&
+            !engine.isHolding
+        ) {
+            recreateOverlayWindows()
+        }
+    }
+
     private fun observeActiveBackend() {
         serviceScope.launch {
-            BackendSelector.activeBackend.collect { backend ->
-                cursorView?.setBackendReady(backend != null)
+            BackendSelector.activeBackend.collect {
+                updateCursorBackendReady()
+            }
+        }
+    }
+
+    private fun observePointerMode() {
+        serviceScope.launch {
+            PointerModeController.mode.collect { newMode ->
+                if (engine.mode != newMode) {
+                    engine.setMode(newMode)
+                    cursorView?.setHolding(false)
+                }
+                if (newMode == PointerMode.NORMAL) {
+                    pendingReturnToNormalOnShizukuDead = false
+                }
+                updateNotification()
+                updateCursorBackendReady()
             }
         }
     }
@@ -838,11 +1376,11 @@ class PointerService : Service() {
                 val targetUseAcc = connected &&
                     (KeyboardAccessibilityService.instance?.getSystemService(WindowManager::class.java) != null)
                 if (currentUsingAccessibilityOverlay != targetUseAcc) {
-                    if (isHoldActive || engine.isHolding) {
+                    if (isHoldActive || isMouseButtonHeldInQueue || engine.isHolding) {
                         pendingWindowRecreate = true
                         Logger.log(
                             "Pointer",
-                            "Status aksesibilitas berubah saat HOLD aktif; pemasangan ulang jendela ditunda."
+                            "Status aksesibilitas berubah saat HOLD/drag aktif; pemasangan ulang jendela ditunda."
                         )
                     } else {
                         recreateOverlayWindows()

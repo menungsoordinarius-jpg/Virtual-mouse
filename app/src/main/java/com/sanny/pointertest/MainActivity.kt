@@ -35,6 +35,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private var countdownJob: Job? = null
     private val SHIZUKU_REQ_CODE = 1001
+    private var isUpdatingMouseModeSwitch = false
 
     private val overlayPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -191,6 +192,12 @@ class MainActivity : AppCompatActivity() {
             "Shizuku: ${if (isPingSuccess) "Berjalan" else "Mati"} | Izin: ${if (hasPermission) "Diberikan" else "Belum"}"
         )
         BackendSelector.evaluate()
+        if (!PointerServiceController.isServiceRunning.value &&
+            PointerModeController.mode.value == PointerMode.MOUSE &&
+            !(isPingSuccess && hasPermission)
+        ) {
+            PointerModeController.forceReturnToNormalFromShizukuLoss()
+        }
     }
 
     private fun requestShizukuPermission() {
@@ -235,6 +242,16 @@ class MainActivity : AppCompatActivity() {
         binding.switchForceAccessibility.isChecked = BackendSelector.forceAccessibility.value
         binding.switchForceAccessibility.setOnCheckedChangeListener { _, isChecked ->
             BackendSelector.setForceAccessibility(this, isChecked)
+        }
+
+        updateMouseModeSwitch(PointerModeController.mode.value)
+        binding.switchMouseMode.setOnCheckedChangeListener { _, isChecked ->
+            if (isUpdatingMouseModeSwitch) return@setOnCheckedChangeListener
+            val target = if (isChecked) PointerMode.MOUSE else PointerMode.NORMAL
+            val accepted = PointerModeController.setMode(this, target)
+            if (!accepted) {
+                updateMouseModeSwitch(PointerModeController.mode.value)
+            }
         }
     }
 
@@ -327,6 +344,18 @@ class MainActivity : AppCompatActivity() {
                 updateWindowTypeDisplay(statusText)
             }
         }
+
+        lifecycleScope.launch {
+            PointerModeController.mode.collect { mode ->
+                updateMouseModeSwitch(mode)
+            }
+        }
+    }
+
+    private fun updateMouseModeSwitch(mode: PointerMode) {
+        isUpdatingMouseModeSwitch = true
+        binding.switchMouseMode.isChecked = (mode == PointerMode.MOUSE)
+        isUpdatingMouseModeSwitch = false
     }
 
     private fun updateBackendStatusDisplay(backend: InputBackend?) {
