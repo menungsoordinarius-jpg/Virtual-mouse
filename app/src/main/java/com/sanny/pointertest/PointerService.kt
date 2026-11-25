@@ -48,6 +48,7 @@ class PointerService : Service() {
         const val ACTION_TOGGLE_MODE = "com.sanny.pointertest.ACTION_TOGGLE_MODE"
 
         private const val ZONE_NOT_TOUCHABLE_TIMEOUT_MS = 30_000L
+        private const val POST_RESTORE_INJECT_DELAY_MS = 40L
 
         private val _windowTypeStatus = MutableStateFlow("Tidak aktif")
         val windowTypeStatus: StateFlow<String> = _windowTypeStatus.asStateFlow()
@@ -77,6 +78,8 @@ class PointerService : Service() {
 
     @Volatile
     private var isZoneTouchable: Boolean = true
+    @Volatile
+    private var lastZoneRestoredTimeMs: Long = 0L
     private var zoneDisabledByNoHole: Boolean = false
     private var zoneDisabledByMouseTouch: Boolean = false
 
@@ -92,7 +95,7 @@ class PointerService : Service() {
             applyZoneTouchableOnMain(
                 touchable = true,
                 logTag = if (wasMouseTouchDisabled) "Mouse" else "Pointer",
-                logMessage = if (wasMouseTouchDisabled) "Mouse: zona touchable lagi" else "Zona sentuh aktif kembali"
+                logMessage = if (wasMouseTouchDisabled) "Mouse: flag NOT_TOUCHABLE dihapus (timeout 30d)" else "Zona sentuh aktif kembali"
             )
         }
     }
@@ -503,8 +506,12 @@ class PointerService : Service() {
 
     private fun createTouchZoneWindow(targetWm: WindowManager?, useAccessibilityOverlay: Boolean) {
         val view = TouchZoneView(this, engine).apply {
-            onMouseTouchWindowTouchableRequest = { touchable ->
-                handleMouseTouchZoneTouchable(touchable)
+            onMouseTouchRestoreRequest = {
+                handleMouseTouchZoneTouchable(touchable = true, reason = "jari terangkat")
+            }
+            isZoneNotTouchableProvider = {
+                !isZoneTouchable ||
+                    (((touchZoneLayoutParams?.flags ?: 0) and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0)
             }
         }
         touchZoneView = view
@@ -540,6 +547,7 @@ class PointerService : Service() {
         touchZoneLayoutParams = lp
         mainHandler.removeCallbacks(zoneTouchableTimeoutRunnable)
         isZoneTouchable = true
+        lastZoneRestoredTimeMs = 0L
         zoneDisabledByNoHole = false
         zoneDisabledByMouseTouch = false
 
@@ -565,7 +573,8 @@ class PointerService : Service() {
         zoneDisabledByMouseTouch = false
         val wm = touchZoneWindowManager ?: windowManager
         touchZoneView?.let { view ->
-            view.onMouseTouchWindowTouchableRequest = null
+            view.onMouseTouchRestoreRequest = null
+            view.isZoneNotTouchableProvider = null
             try {
                 wm?.removeView(view)
             } catch (_: Throwable) {}
@@ -683,6 +692,10 @@ class PointerService : Service() {
             injectionChannel.trySend(GestureCommand.MouseScroll(targetX, targetY, vScroll))
         }
 
+        engine.onMouseNotTouchableRequired = { reason ->
+            handleMouseTouchZoneTouchable(touchable = false, reason = reason)
+        }
+
         engine.onTouchGestureFinished = {
             checkPendingActionsBetweenGestures()
         }
@@ -768,6 +781,29 @@ class PointerService : Service() {
             }
         }
 
+        suspend fun waitIfZoneRestoredOrHoleUpdated() {
+            while (isZoneTouchable && !isServiceDestroyed) {
+                val now = SystemClock.uptimeMillis()
+                val readyAfterRestore = if (lastZoneRestoredTimeMs > 0L) {
+                    lastZoneRestoredTimeMs + POST_RESTORE_INJECT_DELAY_MS
+                } else {
+                    0L
+                }
+                val holeTime = touchZoneView?.lastHoleUpdatedTimeMs ?: 0L
+                val readyAfterHole = if (holeTime > 0L) {
+                    holeTime + POST_RESTORE_INJECT_DELAY_MS
+                } else {
+                    0L
+                }
+                val targetTime = maxOf(readyAfterRestore, readyAfterHole)
+                if (now < targetTime) {
+                    delay(targetTime - now)
+                } else {
+                    break
+                }
+            }
+        }
+
         suspend fun finishMouseDrag(endCmd: GestureCommand.MouseDragEnd?) {
             try {
                 val btn = activeMouseButton
@@ -780,6 +816,10 @@ class PointerService : Service() {
 
                     if (endCmd?.isCancel == true) {
                         Logger.log("Mouse", "Mouse: drag $btnLabel dibatalkan [CANCEL]")
+                    }
+
+                    if (!isServiceDestroyed) {
+                        waitIfZoneRestoredOrHoleUpdated()
                     }
 
                     withContext(NonCancellable) {
@@ -1008,6 +1048,22 @@ class PointerService : Service() {
                             }
                         }
 
+                        if (isZoneTouchable) {
+                            waitIfZoneRestoredOrHoleUpdated()
+                            while (nextCmd == null) {
+                                val queued = injectionChannel.tryReceive().getOrNull() ?: break
+                                if (queued is GestureCommand.MouseHoverMove) {
+                                    latestHover = queued
+                                } else {
+                                    nextCmd = queued
+                                    break
+                                }
+                            }
+                            if (isZoneTouchable) {
+                                waitIfZoneRestoredOrHoleUpdated()
+                            }
+                        }
+
                         val event = EventInjector.createMouseHoverEvent(
                             action = MotionEvent.ACTION_HOVER_MOVE,
                             x = latestHover.x,
@@ -1031,6 +1087,8 @@ class PointerService : Service() {
                         if (activeMouseButton != 0) {
                             finishMouseDrag(null)
                         }
+
+                        waitIfZoneRestoredOrHoleUpdated()
 
                         val clickLabel = if (cmd.button == MotionEvent.BUTTON_SECONDARY) "klik kanan" else "klik kiri"
                         val clickDownTime = SystemClock.uptimeMillis()
@@ -1101,6 +1159,8 @@ class PointerService : Service() {
                         if (activeMouseButton != 0) {
                             finishMouseDrag(null)
                         }
+
+                        waitIfZoneRestoredOrHoleUpdated()
 
                         val btnLabel = if (cmd.button == MotionEvent.BUTTON_SECONDARY) "kanan" else "kiri"
                         mouseDownTime = SystemClock.uptimeMillis()
@@ -1179,6 +1239,8 @@ class PointerService : Service() {
                             }
                         }
 
+                        waitIfZoneRestoredOrHoleUpdated()
+
                         lastMouseDragX = latestMove.x
                         lastMouseDragY = latestMove.y
                         val resMove = injectMouseButtonEvent(
@@ -1223,6 +1285,8 @@ class PointerService : Service() {
                                 break
                             }
                         }
+
+                        waitIfZoneRestoredOrHoleUpdated()
 
                         val scrollEvent = EventInjector.createMouseScrollEvent(
                             x = targetX,
@@ -1299,6 +1363,9 @@ class PointerService : Service() {
         try {
             wm.updateViewLayout(view, lp)
             isZoneTouchable = touchable
+            if (touchable) {
+                lastZoneRestoredTimeMs = SystemClock.uptimeMillis()
+            }
             if (logMessage != null) {
                 Logger.log(logTag, logMessage)
             }
@@ -1307,7 +1374,7 @@ class PointerService : Service() {
         }
     }
 
-    private fun handleMouseTouchZoneTouchable(touchable: Boolean) {
+    private fun handleMouseTouchZoneTouchable(touchable: Boolean, reason: String = "") {
         if (!touchable) {
             if (PointerModeController.mode.value != PointerMode.MOUSE) return
             if (!zoneDisabledByMouseTouch) {
@@ -1315,7 +1382,11 @@ class PointerService : Service() {
                 applyZoneTouchableOnMain(
                     touchable = false,
                     logTag = "Mouse",
-                    logMessage = "Mouse: zona NOT_TOUCHABLE (jari menempel)"
+                    logMessage = if (reason.isNotEmpty()) {
+                        "Mouse: flag NOT_TOUCHABLE aktif ($reason)"
+                    } else {
+                        "Mouse: flag NOT_TOUCHABLE aktif"
+                    }
                 )
             }
         } else {
@@ -1325,7 +1396,7 @@ class PointerService : Service() {
                     applyZoneTouchableOnMain(
                         touchable = true,
                         logTag = "Mouse",
-                        logMessage = "Mouse: zona touchable lagi"
+                        logMessage = "Mouse: flag NOT_TOUCHABLE dihapus"
                     )
                 }
             }
@@ -1341,7 +1412,7 @@ class PointerService : Service() {
                 touchable = true,
                 logTag = if (wasMouseDisabled && logIfMouseWasDisabled) "Mouse" else "Pointer",
                 logMessage = when {
-                    wasMouseDisabled && logIfMouseWasDisabled -> "Mouse: zona touchable lagi"
+                    wasMouseDisabled && logIfMouseWasDisabled -> "Mouse: flag NOT_TOUCHABLE dihapus"
                     !wasMouseDisabled -> "Zona sentuh aktif kembali"
                     else -> null
                 }

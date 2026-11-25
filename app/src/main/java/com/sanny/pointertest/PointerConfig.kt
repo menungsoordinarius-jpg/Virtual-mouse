@@ -7,7 +7,7 @@ package com.sanny.pointertest
  * - v0: ambang batas kecepatan jari (px per ms)
  * - k: koefisien kenaikan linear akselerasi
  * - gainMax: gain maksimum (3.5)
- * - tapMaxDurationMs: 200 ms
+ * - tapMaxDurationMs: 280 ms
  * - tapSlopPx: 10 px
  * - holdThresholdMs: 300 ms
  */
@@ -25,7 +25,7 @@ object PointerConfig {
     var gainMax: Float = 3.5f
 
     /** Durasi maksimum sentuhan agar dianggap Tap (ms) */
-    const val tapMaxDurationMs: Long = 200L
+    const val tapMaxDurationMs: Long = 280L
 
     /** Jarak gerak maksimum (px) untuk Tap maupun syarat diam sebelum HOLD */
     const val tapSlopPx: Float = 10f

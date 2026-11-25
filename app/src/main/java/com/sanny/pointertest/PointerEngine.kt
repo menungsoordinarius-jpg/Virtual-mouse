@@ -47,6 +47,7 @@ class PointerEngine {
     var onMouseDragMoved: ((x: Float, y: Float, button: Int) -> Unit)? = null
     var onMouseDragEnded: ((x: Float, y: Float, totalDx: Float, totalDy: Float, button: Int, isCancel: Boolean) -> Unit)? = null
     var onMouseScroll: ((x: Float, y: Float, vScroll: Float) -> Unit)? = null
+    var onMouseNotTouchableRequired: ((reason: String) -> Unit)? = null
     var onTouchGestureFinished: (() -> Unit)? = null
 
     private val mainHandler: Handler? = try {
@@ -74,6 +75,7 @@ class PointerEngine {
     // State khusus mode MOUSE
     private var activeFingerPointerId: Int = MotionEvent.INVALID_POINTER_ID
     private var isSecondTap: Boolean = false
+    private var hasCrossedSlopInMouseTouch: Boolean = false
     private var activeMouseButton: Int = 0
     private var pendingSingleTapRunnable: Runnable? = null
 
@@ -94,6 +96,7 @@ class PointerEngine {
                 isSecondTap = false
                 holdStartPointerX = pointerX
                 holdStartPointerY = pointerY
+                onMouseNotTouchableRequired?.invoke("HOLD")
                 onMouseDragStarted?.invoke(pointerX, pointerY, btn)
             }
         } else {
@@ -159,6 +162,7 @@ class PointerEngine {
         isFingerDown = false
         isHolding = false
         isSecondTap = false
+        hasCrossedSlopInMouseTouch = false
         activeMouseButton = 0
         isTwoFingerScrolling = false
         ignoreUntilAllUp = false
@@ -312,6 +316,7 @@ class PointerEngine {
                 cancelPendingSingleTap()
 
                 isSecondTap = hasPendingTap
+                hasCrossedSlopInMouseTouch = false
                 isFingerDown = true
                 isHolding = false
                 activeMouseButton = 0
@@ -398,6 +403,10 @@ class PointerEngine {
                     ) {
                         cancelPendingHold()
                         isSecondTap = false
+                        if (!hasCrossedSlopInMouseTouch) {
+                            hasCrossedSlopInMouseTouch = true
+                            onMouseNotTouchableRequired?.invoke("geser")
+                        }
                     }
 
                     val speedPxPerMs = distance / dt.toFloat()
@@ -417,7 +426,7 @@ class PointerEngine {
                         onPositionChanged?.invoke(pointerX, pointerY)
                         if (isHolding && activeMouseButton != 0) {
                             onMouseDragMoved?.invoke(pointerX, pointerY, activeMouseButton)
-                        } else {
+                        } else if (hasCrossedSlopInMouseTouch) {
                             onMouseHoverMoved?.invoke(pointerX, pointerY)
                         }
                     }

@@ -39,7 +39,12 @@ class TouchZoneView(
     var isHoleModeActive: Boolean = false
         private set
 
-    var onMouseTouchWindowTouchableRequest: ((Boolean) -> Unit)? = null
+    @Volatile
+    var lastHoleUpdatedTimeMs: Long = 0L
+        private set
+
+    var onMouseTouchRestoreRequest: (() -> Unit)? = null
+    var isZoneNotTouchableProvider: (() -> Boolean)? = null
 
     private var holePointerX: Float = engine.pointerX
     private var holePointerY: Float = engine.pointerY
@@ -53,7 +58,6 @@ class TouchZoneView(
     private var gestureDownTimeMs: Long = 0L
     private var gestureMoveCount: Int = 0
     private var isTrackingGesture: Boolean = false
-    private var mouseTouchDisabledZone: Boolean = false
 
     private val holeRect = Rect()
 
@@ -166,8 +170,16 @@ class TouchZoneView(
         }
     }
 
+    fun flushPendingHoleUpdate() {
+        if (isHoleModeActive && pendingTrailingUpdate) {
+            mainHandler.removeCallbacks(trailingLayoutRunnable)
+            performHoleLayoutRequest()
+        }
+    }
+
     private fun performHoleLayoutRequest(now: Long = SystemClock.uptimeMillis()) {
         lastHoleUpdateTimeMs = now
+        lastHoleUpdatedTimeMs = now
         pendingTrailingUpdate = false
         if (!isHoleModeActive) return
         requestLayout()
@@ -196,6 +208,7 @@ class TouchZoneView(
             region.op(holeRect, Region.Op.DIFFERENCE)
 
             setTouchableInsetsMethod?.invoke(insets, TOUCHABLE_INSETS_REGION)
+            lastHoleUpdatedTimeMs = SystemClock.uptimeMillis()
 
             holeUpdateCount++
             if (holeUpdateCount % 20 == 0) {
@@ -239,10 +252,7 @@ class TouchZoneView(
     override fun onDetachedFromWindow() {
         mainHandler.removeCallbacks(trailingLayoutRunnable)
         pendingTrailingUpdate = false
-        if (mouseTouchDisabledZone) {
-            mouseTouchDisabledZone = false
-            onMouseTouchWindowTouchableRequest?.invoke(true)
-        }
+        onMouseTouchRestoreRequest?.invoke()
         isTrackingGesture = false
         gestureMoveCount = 0
         unregisterHoleListener()
@@ -262,22 +272,28 @@ class TouchZoneView(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val actionMasked = event.actionMasked
         if (actionMasked == MotionEvent.ACTION_CANCEL) {
+            val elapsedFromDownMs = if (isTrackingGesture) {
+                (event.eventTime - gestureDownTimeMs).coerceAtLeast(0L)
+            } else {
+                0L
+            }
+            val notTouchableActive = isZoneNotTouchableProvider?.invoke() ?: false
             Logger.log(
                 "TouchZone",
-                "ACTION_CANCEL diterima di zona (mode=${engine.mode.name}, isHolding=${engine.isHolding})"
+                "CANCEL setelah $elapsedFromDownMs ms dari DOWN " +
+                    "(flag NOT_TOUCHABLE aktif: ${if (notTouchableActive) "ya" else "tidak"}) " +
+                    "[mode=${engine.mode.name}, isHolding=${engine.isHolding}]"
             )
         }
 
         return try {
             when (actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    val downDelayMs = SystemClock.uptimeMillis() - event.eventTime
+                    Logger.log("TouchZone", "Keterlambatan DOWN: $downDelayMs ms")
                     gestureDownTimeMs = event.eventTime
                     gestureMoveCount = 0
                     isTrackingGesture = true
-                    if (engine.mode == PointerMode.MOUSE) {
-                        mouseTouchDisabledZone = true
-                        onMouseTouchWindowTouchableRequest?.invoke(false)
-                    }
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (isTrackingGesture) {
@@ -296,15 +312,14 @@ class TouchZoneView(
                         gestureMoveCount = 0
                         isTrackingGesture = false
                     }
+                    flushPendingHoleUpdate()
+                    onMouseTouchRestoreRequest?.invoke()
                 }
             }
             engine.onTouchEvent(event)
         } finally {
             if (actionMasked == MotionEvent.ACTION_UP || actionMasked == MotionEvent.ACTION_CANCEL) {
-                if (mouseTouchDisabledZone) {
-                    mouseTouchDisabledZone = false
-                    onMouseTouchWindowTouchableRequest?.invoke(true)
-                }
+                onMouseTouchRestoreRequest?.invoke()
             }
         }
     }
