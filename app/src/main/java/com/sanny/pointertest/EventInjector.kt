@@ -25,6 +25,7 @@ object EventInjector {
 
     private var cachedManager: Any? = null
     private var cachedMethod: Method? = null
+    private var cachedSetDisplayIdMethod: Method? = null
     private var channelDescription = "None"
 
     @Synchronized
@@ -202,7 +203,7 @@ object EventInjector {
             this.size = 1f
         })
 
-        return MotionEvent.obtain(
+        val event = MotionEvent.obtain(
             eventTime,
             eventTime,
             action,
@@ -218,6 +219,8 @@ object EventInjector {
             InputDevice.SOURCE_MOUSE,
             0
         )
+        setDisplayId(event, 0)
+        return event
     }
 
     fun createMouseButtonEvent(
@@ -319,8 +322,12 @@ object EventInjector {
      */
     fun setDisplayId(event: MotionEvent, displayId: Int = 0): Boolean {
         return try {
-            val method = MotionEvent::class.java.getMethod("setDisplayId", Int::class.javaPrimitiveType)
-            method.isAccessible = true
+            val method = cachedSetDisplayIdMethod ?: MotionEvent::class.java
+                .getMethod("setDisplayId", Int::class.javaPrimitiveType)
+                .also {
+                    it.isAccessible = true
+                    cachedSetDisplayIdMethod = it
+                }
             method.invoke(event, displayId)
             true
         } catch (t: Throwable) {

@@ -47,6 +47,8 @@ class PointerService : Service() {
         const val ACTION_STOP_POINTER = "com.sanny.pointertest.ACTION_STOP_POINTER"
         const val ACTION_TOGGLE_MODE = "com.sanny.pointertest.ACTION_TOGGLE_MODE"
 
+        private const val ZONE_NOT_TOUCHABLE_TIMEOUT_MS = 30_000L
+
         private val _windowTypeStatus = MutableStateFlow("Tidak aktif")
         val windowTypeStatus: StateFlow<String> = _windowTypeStatus.asStateFlow()
     }
@@ -72,6 +74,28 @@ class PointerService : Service() {
     private var isMouseButtonHeldInQueue: Boolean = false
     private var pendingReturnToNormalOnShizukuDead: Boolean = false
     private var isServiceDestroyed: Boolean = false
+
+    @Volatile
+    private var isZoneTouchable: Boolean = true
+    private var zoneDisabledByNoHole: Boolean = false
+    private var zoneDisabledByMouseTouch: Boolean = false
+
+    private val zoneTouchableTimeoutRunnable = Runnable {
+        if (!isZoneTouchable) {
+            Logger.log(
+                "TouchZone",
+                "Pengaman 30 detik: zona NOT_TOUCHABLE terlalu lama, memulihkan touchable otomatis."
+            )
+            val wasMouseTouchDisabled = zoneDisabledByMouseTouch
+            zoneDisabledByNoHole = false
+            zoneDisabledByMouseTouch = false
+            applyZoneTouchableOnMain(
+                touchable = true,
+                logTag = if (wasMouseTouchDisabled) "Mouse" else "Pointer",
+                logMessage = if (wasMouseTouchDisabled) "Mouse: zona touchable lagi" else "Zona sentuh aktif kembali"
+            )
+        }
+    }
 
     private var screenWidth: Int = 1080
     private var screenHeight: Int = 2400
@@ -220,18 +244,21 @@ class PointerService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isServiceDestroyed = true
-        PointerServiceController.setRunning(false)
-        _windowTypeStatus.value = "Tidak aktif"
-        engine.cancelAll()
-        injectionChannel.close()
-        removeShizukuListeners()
-        displayManager?.unregisterDisplayListener(displayListener)
-        mainHandler.removeCallbacksAndMessages(null)
-
-        serviceScope.cancel()
-        removeCursorWindow()
-        removeTouchZoneWindow()
-        currentUsingAccessibilityOverlay = null
+        try {
+            PointerServiceController.setRunning(false)
+            _windowTypeStatus.value = "Tidak aktif"
+            engine.cancelAll()
+            injectionChannel.close()
+            removeShizukuListeners()
+            displayManager?.unregisterDisplayListener(displayListener)
+        } finally {
+            restoreZoneTouchableOnCleanup(logIfMouseWasDisabled = true)
+            mainHandler.removeCallbacksAndMessages(null)
+            serviceScope.cancel()
+            removeCursorWindow()
+            removeTouchZoneWindow()
+            currentUsingAccessibilityOverlay = null
+        }
 
         Logger.log("Pointer", "PointerService dihentikan, semua jendela overlay dilepas.")
     }
@@ -475,7 +502,11 @@ class PointerService : Service() {
     }
 
     private fun createTouchZoneWindow(targetWm: WindowManager?, useAccessibilityOverlay: Boolean) {
-        val view = TouchZoneView(this, engine)
+        val view = TouchZoneView(this, engine).apply {
+            onMouseTouchWindowTouchableRequest = { touchable ->
+                handleMouseTouchZoneTouchable(touchable)
+            }
+        }
         touchZoneView = view
 
         val layoutFlag = if (useAccessibilityOverlay) {
@@ -507,6 +538,11 @@ class PointerService : Service() {
         }
 
         touchZoneLayoutParams = lp
+        mainHandler.removeCallbacks(zoneTouchableTimeoutRunnable)
+        isZoneTouchable = true
+        zoneDisabledByNoHole = false
+        zoneDisabledByMouseTouch = false
+
         try {
             val wm = targetWm ?: throw IllegalStateException("WindowManager tidak tersedia")
             wm.addView(view, lp)
@@ -523,8 +559,13 @@ class PointerService : Service() {
     }
 
     private fun removeTouchZoneWindow() {
+        mainHandler.removeCallbacks(zoneTouchableTimeoutRunnable)
+        isZoneTouchable = true
+        zoneDisabledByNoHole = false
+        zoneDisabledByMouseTouch = false
         val wm = touchZoneWindowManager ?: windowManager
         touchZoneView?.let { view ->
+            view.onMouseTouchWindowTouchableRequest = null
             try {
                 wm?.removeView(view)
             } catch (_: Throwable) {}
@@ -1215,6 +1256,9 @@ class PointerService : Service() {
                     setZoneTouchable(true)
                     zoneDisabled = false
                 }
+                withContext(Dispatchers.Main) {
+                    restoreZoneTouchableOnCleanup(logIfMouseWasDisabled = true)
+                }
 
                 // Selalu lepaskan tombol mouse yang tertekan saat coroutine/service berhenti
                 if (activeMouseButton != 0) {
@@ -1224,23 +1268,104 @@ class PointerService : Service() {
         }
     }
 
+    private fun applyZoneTouchableOnMain(
+        touchable: Boolean,
+        logTag: String = "Pointer",
+        logMessage: String? = null
+    ) {
+        val view = touchZoneView ?: return
+        val lp = touchZoneLayoutParams ?: return
+        val wm = touchZoneWindowManager ?: windowManager ?: return
+
+        if (!touchable) {
+            mainHandler.removeCallbacks(zoneTouchableTimeoutRunnable)
+            mainHandler.postDelayed(zoneTouchableTimeoutRunnable, ZONE_NOT_TOUCHABLE_TIMEOUT_MS)
+        } else {
+            mainHandler.removeCallbacks(zoneTouchableTimeoutRunnable)
+        }
+
+        val currentlyTouchable = isZoneTouchable &&
+            ((lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0)
+        if (currentlyTouchable == touchable) {
+            return
+        }
+
+        if (touchable) {
+            lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        } else {
+            lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        }
+
+        try {
+            wm.updateViewLayout(view, lp)
+            isZoneTouchable = touchable
+            if (logMessage != null) {
+                Logger.log(logTag, logMessage)
+            }
+        } catch (t: Throwable) {
+            Logger.log(logTag, "Gagal mengubah status sentuh zona: ${t.message}")
+        }
+    }
+
+    private fun handleMouseTouchZoneTouchable(touchable: Boolean) {
+        if (!touchable) {
+            if (PointerModeController.mode.value != PointerMode.MOUSE) return
+            if (!zoneDisabledByMouseTouch) {
+                zoneDisabledByMouseTouch = true
+                applyZoneTouchableOnMain(
+                    touchable = false,
+                    logTag = "Mouse",
+                    logMessage = "Mouse: zona NOT_TOUCHABLE (jari menempel)"
+                )
+            }
+        } else {
+            if (zoneDisabledByMouseTouch) {
+                zoneDisabledByMouseTouch = false
+                if (!zoneDisabledByNoHole) {
+                    applyZoneTouchableOnMain(
+                        touchable = true,
+                        logTag = "Mouse",
+                        logMessage = "Mouse: zona touchable lagi"
+                    )
+                }
+            }
+        }
+    }
+
+    private fun restoreZoneTouchableOnCleanup(logIfMouseWasDisabled: Boolean) {
+        val wasMouseDisabled = zoneDisabledByMouseTouch
+        zoneDisabledByNoHole = false
+        zoneDisabledByMouseTouch = false
+        if (!isZoneTouchable) {
+            applyZoneTouchableOnMain(
+                touchable = true,
+                logTag = if (wasMouseDisabled && logIfMouseWasDisabled) "Mouse" else "Pointer",
+                logMessage = when {
+                    wasMouseDisabled && logIfMouseWasDisabled -> "Mouse: zona touchable lagi"
+                    !wasMouseDisabled -> "Zona sentuh aktif kembali"
+                    else -> null
+                }
+            )
+        } else {
+            mainHandler.removeCallbacks(zoneTouchableTimeoutRunnable)
+        }
+    }
+
     private suspend fun setZoneTouchable(touchable: Boolean) {
         withContext(Dispatchers.Main) {
-            val view = touchZoneView ?: return@withContext
-            val lp = touchZoneLayoutParams ?: return@withContext
-            if (touchable) {
-                lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-            } else {
-                lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-            }
-            try {
-                (touchZoneWindowManager ?: windowManager)?.updateViewLayout(view, lp)
-                Logger.log(
-                    "Pointer",
-                    if (touchable) "Zona sentuh aktif kembali" else "Zona sentuh dinonaktifkan sementara untuk suntikan"
+            zoneDisabledByNoHole = !touchable
+            if (!touchable) {
+                applyZoneTouchableOnMain(
+                    touchable = false,
+                    logTag = "Pointer",
+                    logMessage = "Zona sentuh dinonaktifkan sementara untuk suntikan"
                 )
-            } catch (t: Throwable) {
-                Logger.log("Pointer", "Gagal mengubah status sentuh zona: ${t.message}")
+            } else if (!zoneDisabledByMouseTouch) {
+                applyZoneTouchableOnMain(
+                    touchable = true,
+                    logTag = "Pointer",
+                    logMessage = "Zona sentuh aktif kembali"
+                )
             }
         }
     }
@@ -1313,15 +1438,21 @@ class PointerService : Service() {
 
     private fun handleShizukuUnavailableInMouseMode() {
         if (PointerModeController.mode.value == PointerMode.MOUSE && !PointerModeController.isShizukuReady()) {
-            if (isMouseButtonHeldInQueue || engine.isGestureActive) {
-                pendingReturnToNormalOnShizukuDead = true
-                Logger.log(
-                    "Mode",
-                    "Shizuku mati saat tombol/gestur mouse aktif; kembali ke NORMAL ditunda hingga dilepas."
-                )
-            } else {
-                pendingReturnToNormalOnShizukuDead = false
-                PointerModeController.forceReturnToNormalFromShizukuLoss()
+            try {
+                if (isMouseButtonHeldInQueue || engine.isGestureActive) {
+                    pendingReturnToNormalOnShizukuDead = true
+                    Logger.log(
+                        "Mode",
+                        "Shizuku mati saat tombol/gestur mouse aktif; kembali ke NORMAL ditunda hingga dilepas."
+                    )
+                } else {
+                    pendingReturnToNormalOnShizukuDead = false
+                    PointerModeController.forceReturnToNormalFromShizukuLoss()
+                }
+            } finally {
+                if (!engine.isGestureActive) {
+                    handleMouseTouchZoneTouchable(true)
+                }
             }
         }
     }
@@ -1348,8 +1479,14 @@ class PointerService : Service() {
 
     private fun observeActiveBackend() {
         serviceScope.launch {
-            BackendSelector.activeBackend.collect {
-                updateCursorBackendReady()
+            BackendSelector.activeBackend.collect { backend ->
+                try {
+                    updateCursorBackendReady()
+                } finally {
+                    if (backend == null) {
+                        restoreZoneTouchableOnCleanup(logIfMouseWasDisabled = true)
+                    }
+                }
             }
         }
     }
@@ -1357,12 +1494,18 @@ class PointerService : Service() {
     private fun observePointerMode() {
         serviceScope.launch {
             PointerModeController.mode.collect { newMode ->
-                if (engine.mode != newMode) {
-                    engine.setMode(newMode)
-                    cursorView?.setHolding(false)
-                }
-                if (newMode == PointerMode.NORMAL) {
-                    pendingReturnToNormalOnShizukuDead = false
+                try {
+                    if (engine.mode != newMode) {
+                        engine.setMode(newMode)
+                        cursorView?.setHolding(false)
+                    }
+                    if (newMode == PointerMode.NORMAL) {
+                        pendingReturnToNormalOnShizukuDead = false
+                    }
+                } finally {
+                    if (newMode == PointerMode.NORMAL && zoneDisabledByMouseTouch) {
+                        handleMouseTouchZoneTouchable(true)
+                    }
                 }
                 updateNotification()
                 updateCursorBackendReady()

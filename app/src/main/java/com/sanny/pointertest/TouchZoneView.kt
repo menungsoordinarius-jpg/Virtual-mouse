@@ -39,6 +39,8 @@ class TouchZoneView(
     var isHoleModeActive: Boolean = false
         private set
 
+    var onMouseTouchWindowTouchableRequest: ((Boolean) -> Unit)? = null
+
     private var holePointerX: Float = engine.pointerX
     private var holePointerY: Float = engine.pointerY
 
@@ -47,6 +49,11 @@ class TouchZoneView(
     private var pendingTrailingUpdate: Boolean = false
     private var holeUpdateCount: Int = 0
     private var lastMouseLeakLogTimeMs: Long = 0L
+
+    private var gestureDownTimeMs: Long = 0L
+    private var gestureMoveCount: Int = 0
+    private var isTrackingGesture: Boolean = false
+    private var mouseTouchDisabledZone: Boolean = false
 
     private val holeRect = Rect()
 
@@ -232,6 +239,12 @@ class TouchZoneView(
     override fun onDetachedFromWindow() {
         mainHandler.removeCallbacks(trailingLayoutRunnable)
         pendingTrailingUpdate = false
+        if (mouseTouchDisabledZone) {
+            mouseTouchDisabledZone = false
+            onMouseTouchWindowTouchableRequest?.invoke(true)
+        }
+        isTrackingGesture = false
+        gestureMoveCount = 0
         unregisterHoleListener()
         super.onDetachedFromWindow()
     }
@@ -247,9 +260,52 @@ class TouchZoneView(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_CANCEL && engine.isHolding) {
-            Logger.log("TouchZone", "Zona menerima CANCEL saat HOLD")
+        val actionMasked = event.actionMasked
+        if (actionMasked == MotionEvent.ACTION_CANCEL) {
+            Logger.log(
+                "TouchZone",
+                "ACTION_CANCEL diterima di zona (mode=${engine.mode.name}, isHolding=${engine.isHolding})"
+            )
         }
-        return engine.onTouchEvent(event)
+
+        return try {
+            when (actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    gestureDownTimeMs = event.eventTime
+                    gestureMoveCount = 0
+                    isTrackingGesture = true
+                    if (engine.mode == PointerMode.MOUSE) {
+                        mouseTouchDisabledZone = true
+                        onMouseTouchWindowTouchableRequest?.invoke(false)
+                    }
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (isTrackingGesture) {
+                        gestureMoveCount++
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (isTrackingGesture) {
+                        val durationMs = (event.eventTime - gestureDownTimeMs).coerceAtLeast(0L)
+                        if (gestureMoveCount > 0) {
+                            Logger.log(
+                                "TouchZone",
+                                "Gerakan jari: $gestureMoveCount event dalam $durationMs ms"
+                            )
+                        }
+                        gestureMoveCount = 0
+                        isTrackingGesture = false
+                    }
+                }
+            }
+            engine.onTouchEvent(event)
+        } finally {
+            if (actionMasked == MotionEvent.ACTION_UP || actionMasked == MotionEvent.ACTION_CANCEL) {
+                if (mouseTouchDisabledZone) {
+                    mouseTouchDisabledZone = false
+                    onMouseTouchWindowTouchableRequest?.invoke(true)
+                }
+            }
+        }
     }
 }
