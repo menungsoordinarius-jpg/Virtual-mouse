@@ -45,6 +45,9 @@ class TouchZoneView(
 
     var onMouseTouchRestoreRequest: (() -> Unit)? = null
     var isZoneNotTouchableProvider: (() -> Boolean)? = null
+    var zoneLayoutFlagsProvider: (() -> Int)? = null
+    var onTouchDownTimestamp: ((Long) -> Unit)? = null
+    var cancelDiagnosticsProvider: ((Long) -> String)? = null
 
     private var holePointerX: Float = engine.pointerX
     private var holePointerY: Float = engine.pointerY
@@ -58,6 +61,8 @@ class TouchZoneView(
     private var gestureDownTimeMs: Long = 0L
     private var gestureMoveCount: Int = 0
     private var isTrackingGesture: Boolean = false
+    private var postDownEventLogCount: Int = 0
+    private var downZoneLayoutFlags: Int = 0
 
     private val holeRect = Rect()
 
@@ -67,7 +72,7 @@ class TouchZoneView(
     private var touchableRegionField: Field? = null
 
     private val trailingLayoutRunnable = Runnable {
-        performHoleLayoutRequest()
+        performHoleLayoutRequest(callerName = "trailingLayoutRunnable")
     }
 
     init {
@@ -138,7 +143,9 @@ class TouchZoneView(
             isHoleModeActive = true
             holeUpdateCount = 0
 
+            val setupNow = SystemClock.uptimeMillis()
             Logger.log("TouchZone", "Mode lubang AKTIF")
+            Logger.log("TouchZone", "updateViewLayout jendela=lubang alasan=setupHoleMode ts=$setupNow")
             requestLayout()
             true
         } catch (t: Throwable) {
@@ -163,7 +170,7 @@ class TouchZoneView(
         if (elapsed >= LAYOUT_THROTTLE_MS) {
             mainHandler.removeCallbacks(trailingLayoutRunnable)
             pendingTrailingUpdate = false
-            performHoleLayoutRequest(now)
+            performHoleLayoutRequest(now, "updatePointerHole")
         } else if (!pendingTrailingUpdate) {
             pendingTrailingUpdate = true
             mainHandler.postDelayed(trailingLayoutRunnable, LAYOUT_THROTTLE_MS - elapsed)
@@ -173,15 +180,19 @@ class TouchZoneView(
     fun flushPendingHoleUpdate() {
         if (isHoleModeActive && pendingTrailingUpdate) {
             mainHandler.removeCallbacks(trailingLayoutRunnable)
-            performHoleLayoutRequest()
+            performHoleLayoutRequest(callerName = "flushPendingHoleUpdate")
         }
     }
 
-    private fun performHoleLayoutRequest(now: Long = SystemClock.uptimeMillis()) {
+    private fun performHoleLayoutRequest(
+        now: Long = SystemClock.uptimeMillis(),
+        callerName: String = "performHoleLayoutRequest"
+    ) {
         lastHoleUpdateTimeMs = now
         lastHoleUpdatedTimeMs = now
         pendingTrailingUpdate = false
         if (!isHoleModeActive) return
+        Logger.log("TouchZone", "updateViewLayout jendela=lubang alasan=$callerName ts=$now")
         requestLayout()
     }
 
@@ -239,6 +250,24 @@ class TouchZoneView(
         } catch (_: Throwable) {}
     }
 
+    private fun toolTypeToString(toolType: Int): String = when (toolType) {
+        MotionEvent.TOOL_TYPE_FINGER -> "FINGER"
+        MotionEvent.TOOL_TYPE_MOUSE -> "MOUSE"
+        MotionEvent.TOOL_TYPE_STYLUS -> "STYLUS"
+        MotionEvent.TOOL_TYPE_ERASER -> "ERASER"
+        MotionEvent.TOOL_TYPE_UNKNOWN -> "UNKNOWN"
+        else -> "TYPE_$toolType"
+    }
+
+    private fun sourceToString(source: Int): String {
+        val label = when {
+            (source and InputDevice.SOURCE_TOUCHSCREEN) == InputDevice.SOURCE_TOUCHSCREEN -> "TOUCHSCREEN"
+            (source and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE -> "MOUSE"
+            else -> "OTHER"
+        }
+        return "$label(0x${Integer.toHexString(source)})"
+    }
+
     private fun isMouseEvent(event: MotionEvent): Boolean {
         if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return true
         for (i in 0 until event.pointerCount) {
@@ -252,7 +281,11 @@ class TouchZoneView(
             val now = SystemClock.uptimeMillis()
             if (now - lastMouseLeakLogTimeMs >= MOUSE_LEAK_LOG_THROTTLE_MS) {
                 lastMouseLeakLogTimeMs = now
-                Logger.log("TouchZone", "Zona menerima event mouse (bocor)")
+                Logger.log(
+                    "TouchZone",
+                    "Zona menerima event mouse (bocor) [${MotionEvent.actionToString(event.actionMasked)}, " +
+                        "pos=(${event.x.toInt()},${event.y.toInt()})]"
+                )
             }
         }
     }
@@ -298,6 +331,7 @@ class TouchZoneView(
         }
         val actionMasked = event.actionMasked
         if (actionMasked == MotionEvent.ACTION_CANCEL) {
+            val nowUptime = SystemClock.uptimeMillis()
             val elapsedFromDownMs = if (isTrackingGesture) {
                 (event.eventTime - gestureDownTimeMs).coerceAtLeast(0L)
             } else {
@@ -310,6 +344,38 @@ class TouchZoneView(
                     "(flag NOT_TOUCHABLE aktif: ${if (notTouchableActive) "ya" else "tidak"}) " +
                     "[mode=${engine.mode.name}, isHolding=${engine.isHolding}]"
             )
+            val currentFlags = zoneLayoutFlagsProvider?.invoke() ?: 0
+            val cancelIdx = event.actionIndex
+            val cancelToolType = toolTypeToString(event.getToolType(cancelIdx))
+            val cancelSource = sourceToString(event.source)
+            val fingerX = event.getX(cancelIdx).toInt()
+            val fingerY = event.getY(cancelIdx).toInt()
+            val activeHoleRect = if (!holeRect.isEmpty) {
+                holeRect
+            } else {
+                val cx = holePointerX.toInt()
+                val cy = holePointerY.toInt()
+                Rect(
+                    cx - HOLE_HALF_SIZE_PX,
+                    cy - HOLE_HALF_SIZE_PX,
+                    cx + HOLE_HALF_SIZE_PX,
+                    cy + HOLE_HALF_SIZE_PX
+                )
+            }
+            val holePositionLabel = if (activeHoleRect.contains(fingerX, fingerY)) "di dalam" else "di luar"
+            val sinceHoleMs = if (lastHoleUpdatedTimeMs > 0L) {
+                "${(nowUptime - lastHoleUpdatedTimeMs).coerceAtLeast(0L)} ms"
+            } else {
+                "belum"
+            }
+            val serviceDiag = cancelDiagnosticsProvider?.invoke(nowUptime) ?: "diag=tidak_tersedia"
+            Logger.log(
+                "TouchZone",
+                "CANCEL detail: flagsNow=0x${Integer.toHexString(currentFlags)} flagsDown=0x${Integer.toHexString(downZoneLayoutFlags)} | " +
+                    "tool=$cancelToolType src=$cancelSource | " +
+                    "jari=($fingerX,$fingerY) $holePositionLabel lubang=[${activeHoleRect.left},${activeHoleRect.top}-${activeHoleRect.right},${activeHoleRect.bottom}] | " +
+                    "sejakLubang=$sinceHoleMs | $serviceDiag"
+            )
         }
 
         return try {
@@ -318,8 +384,17 @@ class TouchZoneView(
                     val downDelayMs = SystemClock.uptimeMillis() - event.eventTime
                     Logger.log("TouchZone", "Keterlambatan DOWN: $downDelayMs ms")
                     gestureDownTimeMs = event.eventTime
+                    downZoneLayoutFlags = zoneLayoutFlagsProvider?.invoke() ?: 0
+                    onTouchDownTimestamp?.invoke(event.eventTime)
                     gestureMoveCount = 0
+                    postDownEventLogCount = 0
                     isTrackingGesture = true
+                    Logger.log(
+                        "TouchZone",
+                        "Event #0 (DOWN): action=${MotionEvent.actionToString(actionMasked)} " +
+                            "tool=${toolTypeToString(event.getToolType(0))} src=${sourceToString(event.source)} " +
+                            "x=${event.getX(0).toInt()} y=${event.getY(0).toInt()} +0ms"
+                    )
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (isTrackingGesture) {
@@ -341,6 +416,17 @@ class TouchZoneView(
                     flushPendingHoleUpdate()
                     onMouseTouchRestoreRequest?.invoke()
                 }
+            }
+            if (actionMasked != MotionEvent.ACTION_DOWN && postDownEventLogCount < 10) {
+                postDownEventLogCount++
+                val evIdx = event.actionIndex
+                val deltaFromDownMs = (event.eventTime - gestureDownTimeMs).coerceAtLeast(0L)
+                Logger.log(
+                    "TouchZone",
+                    "Event #$postDownEventLogCount/10: action=${MotionEvent.actionToString(actionMasked)} " +
+                        "tool=${toolTypeToString(event.getToolType(evIdx))} src=${sourceToString(event.source)} " +
+                        "x=${event.getX(evIdx).toInt()} y=${event.getY(evIdx).toInt()} +${deltaFromDownMs}ms"
+                )
             }
             engine.onTouchEvent(event)
         } finally {

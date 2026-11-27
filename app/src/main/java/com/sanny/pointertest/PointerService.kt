@@ -80,8 +80,37 @@ class PointerService : Service() {
     private var isZoneTouchable: Boolean = true
     @Volatile
     private var lastZoneRestoredTimeMs: Long = 0L
+    @Volatile
+    private var lastTouchDownTimeMs: Long = 0L
+    @Volatile
+    private var lastCursorUpdateViewLayoutMs: Long = 0L
+    @Volatile
+    private var lastZoneUpdateViewLayoutMs: Long = 0L
+    @Volatile
+    private var lastMouseInjectTimeMs: Long = 0L
+    @Volatile
+    private var lastMouseInjectAction: String = "belum ada"
     private var zoneDisabledByNoHole: Boolean = false
     private var zoneDisabledByMouseTouch: Boolean = false
+
+    private fun formatSinceDownMs(nowMs: Long = SystemClock.uptimeMillis()): String {
+        val downMs = lastTouchDownTimeMs
+        return if (downMs > 0L) "${(nowMs - downMs).coerceAtLeast(0L)} ms" else "belum ada DOWN"
+    }
+
+    private fun recordAndLogUpdateViewLayout(windowName: String, callerName: String) {
+        val now = SystemClock.uptimeMillis()
+        when (windowName) {
+            "kursor" -> lastCursorUpdateViewLayoutMs = now
+            "zona" -> lastZoneUpdateViewLayoutMs = now
+        }
+        Logger.log("Pointer", "updateViewLayout jendela=$windowName alasan=$callerName ts=$now")
+    }
+
+    private fun recordMouseInjection(actionLabel: String, timestampMs: Long = SystemClock.uptimeMillis()) {
+        lastMouseInjectAction = actionLabel
+        lastMouseInjectTimeMs = timestampMs
+    }
 
     private val zoneTouchableTimeoutRunnable = Runnable {
         if (!isZoneTouchable) {
@@ -513,6 +542,30 @@ class PointerService : Service() {
                 !isZoneTouchable ||
                     (((touchZoneLayoutParams?.flags ?: 0) and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0)
             }
+            zoneLayoutFlagsProvider = {
+                touchZoneLayoutParams?.flags ?: 0
+            }
+            onTouchDownTimestamp = { downMs ->
+                lastTouchDownTimeMs = downMs
+            }
+            cancelDiagnosticsProvider = { nowUptime ->
+                val sinceCursorLayout = if (lastCursorUpdateViewLayoutMs > 0L) {
+                    "${(nowUptime - lastCursorUpdateViewLayoutMs).coerceAtLeast(0L)} ms"
+                } else {
+                    "belum"
+                }
+                val sinceZoneLayout = if (lastZoneUpdateViewLayoutMs > 0L) {
+                    "${(nowUptime - lastZoneUpdateViewLayoutMs).coerceAtLeast(0L)} ms"
+                } else {
+                    "belum"
+                }
+                val sinceMouseInject = if (lastMouseInjectTimeMs > 0L) {
+                    "${(nowUptime - lastMouseInjectTimeMs).coerceAtLeast(0L)} ms ($lastMouseInjectAction)"
+                } else {
+                    "belum ada"
+                }
+                "sejakUpdateKursor=$sinceCursorLayout | sejakUpdateZona=$sinceZoneLayout | sejakSuntikMouse=$sinceMouseInject"
+            }
         }
         touchZoneView = view
 
@@ -575,6 +628,9 @@ class PointerService : Service() {
         touchZoneView?.let { view ->
             view.onMouseTouchRestoreRequest = null
             view.isZoneNotTouchableProvider = null
+            view.zoneLayoutFlagsProvider = null
+            view.onTouchDownTimestamp = null
+            view.cancelDiagnosticsProvider = null
             try {
                 wm?.removeView(view)
             } catch (_: Throwable) {}
@@ -590,7 +646,10 @@ class PointerService : Service() {
                 cursorLayoutParams?.let { lp ->
                     lp.width = screenWidth
                     lp.height = screenHeight
-                    (cursorWindowManager ?: windowManager)?.updateViewLayout(view, lp)
+                    (cursorWindowManager ?: windowManager)?.let { wm ->
+                        recordAndLogUpdateViewLayout("kursor", "updateWindowLayouts")
+                        wm.updateViewLayout(view, lp)
+                    }
                 }
             }
 
@@ -600,7 +659,10 @@ class PointerService : Service() {
                     val targetHeight = (screenHeight - kbHeight).coerceAtLeast(1)
                     lp.width = screenWidth
                     lp.height = targetHeight
-                    (touchZoneWindowManager ?: windowManager)?.updateViewLayout(view, lp)
+                    (touchZoneWindowManager ?: windowManager)?.let { wm ->
+                        recordAndLogUpdateViewLayout("zona", "updateWindowLayouts")
+                        wm.updateViewLayout(view, lp)
+                    }
                 }
             }
         } catch (t: Throwable) {
@@ -742,6 +804,14 @@ class PointerService : Service() {
             )
             val result = EventInjector.injectEvent(event, logResult = logInjector)
             event.recycle()
+            val injectNow = SystemClock.uptimeMillis()
+            val actionName = MotionEvent.actionToString(action)
+            recordMouseInjection(actionName, injectNow)
+            Logger.log(
+                "Mouse",
+                "Mouse: suntik $actionName (${x.toInt()}, ${y.toInt()}) -> Sukses=${result.success} | " +
+                    "sejak DOWN=${formatSinceDownMs(injectNow)}"
+            )
             return result
         }
 
@@ -1072,16 +1142,17 @@ class PointerService : Service() {
                         )
                         val res = EventInjector.injectEvent(event, logResult = false)
                         event.recycle()
-                        lastHoverInjectTimeMs = SystemClock.uptimeMillis()
+                        val hoverNow = SystemClock.uptimeMillis()
+                        lastHoverInjectTimeMs = hoverNow
 
                         hoverEventCount++
-                        if (hoverEventCount == 1 || hoverEventCount % 30 == 0 || !res.success) {
-                            Logger.log(
-                                "Mouse",
-                                "Mouse: ${MotionEvent.actionToString(MotionEvent.ACTION_HOVER_MOVE)} #$hoverEventCount " +
-                                    "(${latestHover.x.toInt()}, ${latestHover.y.toInt()}) -> Sukses=${res.success}"
-                            )
-                        }
+                        recordMouseInjection(MotionEvent.actionToString(MotionEvent.ACTION_HOVER_MOVE), hoverNow)
+                        Logger.log(
+                            "Mouse",
+                            "Mouse: ${MotionEvent.actionToString(MotionEvent.ACTION_HOVER_MOVE)} #$hoverEventCount " +
+                                "(${latestHover.x.toInt()}, ${latestHover.y.toInt()}) -> Sukses=${res.success} | " +
+                                "sejak DOWN=${formatSinceDownMs(hoverNow)}"
+                        )
                     }
 
                     is GestureCommand.MouseClick -> {
@@ -1296,11 +1367,14 @@ class PointerService : Service() {
                         )
                         val res = EventInjector.injectEvent(scrollEvent, logResult = false)
                         scrollEvent.recycle()
+                        val scrollNow = SystemClock.uptimeMillis()
+                        recordMouseInjection(MotionEvent.actionToString(MotionEvent.ACTION_SCROLL), scrollNow)
 
                         Logger.log(
                             "Mouse",
                             "Mouse: scroll nilai=${"%.2f".format(totalVScroll)} (${targetX.toInt()}, ${targetY.toInt()}) | " +
-                                "${MotionEvent.actionToString(MotionEvent.ACTION_SCROLL)}=${res.success}"
+                                "${MotionEvent.actionToString(MotionEvent.ACTION_SCROLL)}=${res.success} | " +
+                                "sejak DOWN=${formatSinceDownMs(scrollNow)}"
                         )
                     }
                 }
@@ -1362,6 +1436,7 @@ class PointerService : Service() {
         }
 
         try {
+            recordAndLogUpdateViewLayout("zona", "applyZoneTouchableOnMain(touchable=$touchable)")
             wm.updateViewLayout(view, lp)
             isZoneTouchable = touchable
             if (touchable) {
@@ -1462,7 +1537,10 @@ class PointerService : Service() {
                         if (lp.height != targetHeight) {
                             lp.height = targetHeight
                             try {
-                                (touchZoneWindowManager ?: windowManager)?.updateViewLayout(view, lp)
+                                (touchZoneWindowManager ?: windowManager)?.let { wm ->
+                                    recordAndLogUpdateViewLayout("zona", "observeKeyboardHeight(kb=${kbHeight}px)")
+                                    wm.updateViewLayout(view, lp)
+                                }
                                 Logger.log(
                                     "Pointer",
                                     "Tinggi zona sentuh disesuaikan: ${targetHeight}px (Keyboard: ${kbHeight}px)"
