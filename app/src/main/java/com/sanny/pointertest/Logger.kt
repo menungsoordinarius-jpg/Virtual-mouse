@@ -23,7 +23,8 @@ object Logger {
     @Synchronized
     fun log(tag: String, message: String) {
         val timestamp = timeFormat.format(Date())
-        val entry = "[$timestamp] [$tag] $message"
+        val sourceFile = resolveCallerFileName()
+        val entry = "[$timestamp] [$sourceFile] [$tag] $message"
         logEntries.add(entry)
         if (logEntries.size > 1000) {
             logEntries.removeAt(0)
@@ -37,6 +38,26 @@ object Logger {
         } else {
             listener?.invoke(copy)
         }
+    }
+
+    private fun resolveCallerFileName(): String {
+        val loggerClassName = Logger::class.java.name
+        val stack = Throwable().stackTrace
+        for (element in stack) {
+            val className = element.className
+            if (className == loggerClassName || className.startsWith("$loggerClassName$")) {
+                continue
+            }
+            val fileName = element.fileName
+            if (!fileName.isNullOrBlank() && fileName != "Logger.kt") {
+                return fileName.substringAfterLast('/').substringAfterLast('\\')
+            }
+            val simpleClass = className.substringAfterLast('.').substringBefore('$')
+            if (simpleClass.isNotBlank() && simpleClass != "Logger") {
+                return "$simpleClass.kt"
+            }
+        }
+        return "Unknown.kt"
     }
 
     @Synchronized
