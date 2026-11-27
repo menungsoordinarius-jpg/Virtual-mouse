@@ -1048,19 +1048,20 @@ class PointerService : Service() {
                             }
                         }
 
-                        if (isZoneTouchable) {
-                            waitIfZoneRestoredOrHoleUpdated()
-                            while (nextCmd == null) {
-                                val queued = injectionChannel.tryReceive().getOrNull() ?: break
-                                if (queued is GestureCommand.MouseHoverMove) {
-                                    latestHover = queued
-                                } else {
-                                    nextCmd = queued
-                                    break
+                        if (isZoneTouchable && lastZoneRestoredTimeMs > 0L) {
+                            val now = SystemClock.uptimeMillis()
+                            val readyAfterRestore = lastZoneRestoredTimeMs + POST_RESTORE_INJECT_DELAY_MS
+                            if (now < readyAfterRestore && !isServiceDestroyed) {
+                                delay(readyAfterRestore - now)
+                                while (nextCmd == null) {
+                                    val queued = injectionChannel.tryReceive().getOrNull() ?: break
+                                    if (queued is GestureCommand.MouseHoverMove) {
+                                        latestHover = queued
+                                    } else {
+                                        nextCmd = queued
+                                        break
+                                    }
                                 }
-                            }
-                            if (isZoneTouchable) {
-                                waitIfZoneRestoredOrHoleUpdated()
                             }
                         }
 

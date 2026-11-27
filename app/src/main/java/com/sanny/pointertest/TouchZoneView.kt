@@ -239,8 +239,16 @@ class TouchZoneView(
         } catch (_: Throwable) {}
     }
 
+    private fun isMouseEvent(event: MotionEvent): Boolean {
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return true
+        for (i in 0 until event.pointerCount) {
+            if (event.getToolType(i) == MotionEvent.TOOL_TYPE_MOUSE) return true
+        }
+        return false
+    }
+
     private fun checkMouseLeak(event: MotionEvent) {
-        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+        if (isMouseEvent(event)) {
             val now = SystemClock.uptimeMillis()
             if (now - lastMouseLeakLogTimeMs >= MOUSE_LEAK_LOG_THROTTLE_MS) {
                 lastMouseLeakLogTimeMs = now
@@ -259,17 +267,35 @@ class TouchZoneView(
         super.onDetachedFromWindow()
     }
 
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (isMouseEvent(event)) {
+            checkMouseLeak(event)
+            return false
+        }
+        return super.dispatchTouchEvent(event)
+    }
+
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
-        checkMouseLeak(event)
+        if (isMouseEvent(event)) {
+            checkMouseLeak(event)
+            return false
+        }
         return super.onGenericMotionEvent(event)
     }
 
     override fun onHoverEvent(event: MotionEvent): Boolean {
-        checkMouseLeak(event)
+        if (isMouseEvent(event)) {
+            checkMouseLeak(event)
+            return false
+        }
         return super.onHoverEvent(event)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (isMouseEvent(event)) {
+            checkMouseLeak(event)
+            return false
+        }
         val actionMasked = event.actionMasked
         if (actionMasked == MotionEvent.ACTION_CANCEL) {
             val elapsedFromDownMs = if (isTrackingGesture) {

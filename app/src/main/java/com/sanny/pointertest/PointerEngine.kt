@@ -403,10 +403,7 @@ class PointerEngine {
                     ) {
                         cancelPendingHold()
                         isSecondTap = false
-                        if (!hasCrossedSlopInMouseTouch) {
-                            hasCrossedSlopInMouseTouch = true
-                            onMouseNotTouchableRequired?.invoke("geser")
-                        }
+                        hasCrossedSlopInMouseTouch = true
                     }
 
                     val speedPxPerMs = distance / dt.toFloat()
