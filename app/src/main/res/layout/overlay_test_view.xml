@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/overlayContainer"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#05000000"
+    android:fitsSystemWindows="false">
+
+    <!-- Top Floating Status Badge -->
+    <LinearLayout
+        android:id="@+id/overlayHeader"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="36dp"
+        android:background="#CC1E293B"
+        android:elevation="6dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="14dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="8dp">
+
+        <TextView
+            android:id="@+id/tvOverlayStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="[Overlay Tes Aktif] Sentuhan: 0 | IME: 0px"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnCloseOverlay"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginStart="8dp"
+            android:minWidth="0dp"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:text="Tutup"
+            android:textColor="#EF4444"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <!-- Subtle visual touch feedback point (animated or placed at last touch) -->
+    <View
+        android:id="@+id/touchIndicator"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:background="#662563EB"
+        android:visibility="gone" />
+
+</FrameLayout>

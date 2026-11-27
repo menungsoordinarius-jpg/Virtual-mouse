@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.PointerTest" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#2563EB</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorPrimaryContainer">#DBEAFE</item>
+        <item name="colorOnPrimaryContainer">#1E40AF</item>
+        <item name="colorSecondary">#0D9488</item>
+        <item name="colorOnSecondary">#FFFFFF</item>
+        <item name="android:statusBarColor">?attr/colorSurface</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">?attr/colorSurface</item>
+    </style>
+</resources>
